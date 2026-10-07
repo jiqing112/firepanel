@@ -51,8 +51,8 @@ jobs:
             mkdir -p "$dir"
             cp dist/firepanel-linux-$arch "$dir/firepanel"
             cp deploy/install.sh deploy/config.example.yaml "$dir/"
-            cp -r deploy/firepanel.service "$dir/"
-            tar -czf "release/firepanel-linux-$arch.tar.gz" -C "$dir" .
+            cp deploy/firepanel.service "$dir/"
+            tar -czf "release/firepanel-linux-$arch.tar.gz" -C "$dir" firepanel install.sh config.example.yaml firepanel.service
           done
 
       - name: 发布 GitHub Release

@@ -36,16 +36,21 @@ SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*`
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
-# 1. 构建或下载二进制（见下方「源码构建」/ GitHub Releases）
-bash scripts/build.sh linux           # 产物 dist/firepanel
+# 1. 获取二进制：直接下载 Release 包（推荐），或本地构建后上传
+#    https://github.com/jiqing112/firepanel/releases/latest
+curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
 
-# 2. 上传到服务器，与 deploy/install.sh 同目录执行
-scp dist/firepanel user@server:/tmp/deploy/
-scp -r deploy user@server:/tmp/deploy/
-ssh user@server
-cd /tmp/deploy && sudo bash deploy/install.sh          # 默认 /opt/firepanel + 端口 18088
-# 自定义：sudo bash deploy/install.sh /opt/firepanel 18088
+# 2. 解压后与 install.sh 同目录执行
+mkdir -p /tmp/deploy && tar -xzf /tmp/fp.tar.gz -C /tmp/deploy
+cd /tmp/deploy
+bash install.sh                        # 默认 /opt/firepanel + 端口 18088
+# 自定义：bash install.sh /opt/firepanel 18088
+
+# （从仓库 checkout 运行则是：cd /tmp/deploy && bash deploy/install.sh）
 ```
+
+> 用 root 直接运行即可（无需 sudo）；无 sudo 的最小化系统同样适用。
+> Release 包为平铺结构（firepanel 与 install.sh 同级）。
 
 脚本自动完成：识别发行版 → 安装 nftables/iptables（缺失时）→ 备份现有防火墙规则（/tmp 快照）→
 放行面板端口 → 注册并启动 systemd 服务（开机自启）。完成后浏览器访问 `http://<服务器IP>:18088`，
@@ -57,9 +62,11 @@ cd /tmp/deploy && sudo bash deploy/install.sh          # 默认 /opt/firepanel +
 ### 方式二：手动部署（不用脚本）
 
 ```bash
-# 目标机上
+# 目标机上：下载并解压（Release 包）
+curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
+mkdir -p /tmp/fp && tar -xzf /tmp/fp.tar.gz -C /tmp/fp
 sudo mkdir -p /opt/firepanel/data
-sudo cp firepanel /opt/firepanel/ && sudo chmod +x /opt/firepanel/firepanel
+sudo install -m 755 /tmp/fp/firepanel /opt/firepanel/firepanel
 
 # systemd 服务（模板见 deploy/firepanel.service）
 sudo tee /etc/systemd/system/firepanel.service >/dev/null <<'UNIT'
@@ -81,8 +88,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now firepanel
 
 ### 方式三：Docker
 
+前置：Docker 24+ 且带 **buildx** 插件（Debian/Ubuntu 的 docker.io 不自带，安装：
+`curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx https://github.com/docker/buildx/releases/latest/download/buildx-v0.28.0.linux-amd64 && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx`）；
+80/443/18088 需空闲（先停掉占用这些端口的服务，如旧实例的 Caddy）。
+
 ```bash
-cd deploy && docker compose up -d --build
+git clone https://github.com/jiqing112/firepanel.git
+cd firepanel/deploy && docker compose up -d --build
 ```
 
 容器需要 `NET_ADMIN` 能力操作宿主 netfilter；面板 18088、反代 80/443 已在 compose 中映射。
