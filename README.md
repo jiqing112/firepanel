@@ -27,49 +27,85 @@ SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*`
 
 ## 安装部署
 
-### 环境要求
+### 0. 环境要求与准备
 
-- Linux x86_64（amd64）/ arm64，内核 ≥ 4.9（nftables 或 iptables 任一）
-- 面板本身零依赖：单二进制已内嵌前端与 SQLite；仅防火墙功能需要系统装有 nftables 或 iptables（安装脚本会自动补装）
-- 如需反代/证书功能：80/443（或自定义端口）可监听；DNS-01 挑战则无端口要求
+| 项 | 要求 | 检查命令 |
+|---|---|---|
+| 系统 | Linux x86_64 / arm64（amd64 为主） | `uname -m` |
+| 内核 | ≥ 4.9（nftables 或 iptables 任一） | `uname -r` |
+| 防火墙工具 | nftables 或 iptables（脚本会自动补装） | `command -v nft || command -v iptables` |
+| 端口 | 面板默认 18088；反代默认 80/443（均可改） | `ss -tlnp \| grep -E ':80 |:443 |:18088'` |
+| 权限 | root（防火墙操作与 systemd 注册需要） | `whoami` |
 
-### 方式一：一键安装脚本（推荐）
+- 面板本身**零依赖**：单二进制已内嵌前端与 SQLite，静态链接（musl/glibc 无关，Alpine 也能跑）
+- 如需反代/证书：80/443（或自定义端口）可监听即可；DNS-01 挑战则无端口要求
+- **云服务器务必放行安全组**：面板端口（18088）与反代端口（80/443）要在云厂商控制台的安全组/防火墙里放行——这是「安装后面板打不开」的最常见原因
+
+### 1. 获取安装包
+
+三种途径任选：
+
+**a. 下载 GitHub Release 包（推荐，最新版）**
 
 ```bash
-# 1. 获取二进制：直接下载 Release 包（推荐），或本地构建后上传
-#    https://github.com/jiqing112/firepanel/releases/latest
+# amd64（绝大多数云服务器）
 curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
-
-# 2. 解压后与 install.sh 同目录执行
-mkdir -p /tmp/deploy && tar -xzf /tmp/fp.tar.gz -C /tmp/deploy
-cd /tmp/deploy
-bash install.sh                        # 默认 /opt/firepanel + 端口 18088
-# 自定义：bash install.sh /opt/firepanel 18088
-
-# （从仓库 checkout 运行则是：cd /tmp/deploy && bash deploy/install.sh）
+# arm64
+curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-arm64.tar.gz
+mkdir -p /tmp/fp && tar -xzf /tmp/fp.tar.gz -C /tmp/fp && ls /tmp/fp
+# 解压得到：firepanel  install.sh  config.example.yaml  firepanel.service
 ```
 
-> 用 root 直接运行即可（无需 sudo）；无 sudo 的最小化系统同样适用。
-> Release 包为平铺结构（firepanel 与 install.sh 同级）。
-
-脚本自动完成：识别发行版 → 安装 nftables/iptables（缺失时）→ 备份现有防火墙规则（/tmp 快照）→
-放行面板端口 → 注册并启动 systemd 服务（开机自启）。完成后浏览器访问 `http://<服务器IP>:18088`，
-首次访问按向导创建管理员账号。
-
-> GitHub Actions 会在每次打 tag（`v*`）时自动构建 amd64/arm64 二进制并发布到 Releases，
-> 可直接下载 `firepanel-linux-amd64.tar.gz` 解压后执行上面的第 2 步。
-
-### 方式二：手动部署（不用脚本）
+**b. 本地源码构建后上传**
 
 ```bash
-# 目标机上：下载并解压（Release 包，root 执行）
-curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
-mkdir -p /tmp/fp && tar -xzf /tmp/fp.tar.gz -C /tmp/fp
+git clone https://github.com/jiqing112/firepanel.git
+cd firepanel && bash scripts/build.sh linux    # 产物 dist/firepanel（~17MB）
+scp dist/firepanel user@server:/tmp/fp/
+```
+
+**c. 从 Releases 页手动下载**：https://github.com/jiqing112/firepanel/releases
+
+### 2. 方式一：一键安装脚本（推荐）
+
+把 `install.sh` 与 `firepanel` 放在一起执行（Release 包解压后天然满足）：
+
+```bash
+cd /tmp/fp                 # 或包含这两个文件的任意目录
+bash install.sh            # 默认安装到 /opt/firepanel，面板端口 18088
+# 自定义目录与端口：
+# bash install.sh /opt/firepanel 18088
+```
+
+> root 直接运行即可；没有 sudo 的最小化系统同样适用（脚本自己就是 root 语义）。
+
+脚本依次自动完成（每步都有 `==>` 前缀输出，失败会停在对应步骤）：
+
+1. 识别发行版（Debian/Ubuntu/CentOS/Rocky/Alma/Fedora/openSUSE/Arch）
+2. 安装 nftables / iptables（仅当系统没有时）
+3. 二进制放到 `/opt/firepanel/`
+4. 写入并启用 systemd 服务 `firepanel`（开机自启，崩溃自动重启）
+5. **先备份现有防火墙规则**到 `/tmp/firepanel-ruleset-backup-<时间戳>.txt`，再放行面板端口
+6. 启动并输出访问地址
+
+成功标志：输出 `FirePanel 已启动` + 访问地址。验证：
+
+```bash
+systemctl is-active firepanel          # active
+curl http://127.0.0.1:18088/api/v1/bootstrap    # 返回 JSON
+```
+
+### 3. 方式二：手动部署（不用脚本）
+
+适合想完全掌控每一步的场景。
+
+```bash
+# ① 放置二进制与数据目录
 mkdir -p /opt/firepanel/data
 install -m 755 /tmp/fp/firepanel /opt/firepanel/firepanel
 
-# systemd 服务（模板见 deploy/firepanel.service）
-sudo tee /etc/systemd/system/firepanel.service >/dev/null <<'UNIT'
+# ② 注册 systemd 服务
+tee /etc/systemd/system/firepanel.service >/dev/null <<'UNIT'
 [Unit]
 Description=FirePanel firewall web panel
 After=network-online.target
@@ -81,55 +117,80 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
-sudo systemctl daemon-reload && sudo systemctl enable --now firepanel
+systemctl daemon-reload
+systemctl enable --now firepanel
 
-# 别忘了放行面板端口（或在面板「防火墙规则 / IP 名单」里管理）
+# ③ 放行面板端口（临时；之后可在面板内管理）
+iptables -I INPUT 1 -p tcp --dport 18088 -j ACCEPT
 ```
 
-### 方式三：Docker
+验证：`systemctl is-active firepanel` 为 active，且 `curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON。
 
-前置：Docker 24+ 且带 **buildx** 插件（Debian/Ubuntu 的 docker.io 不自带，安装：
-`curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx https://github.com/docker/buildx/releases/latest/download/buildx-v0.28.0.linux-amd64 && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx`）；
-80/443/18088 需空闲（先停掉占用这些端口的服务，如旧实例的 Caddy）。
+### 4. 方式三：Docker
+
+前置：Docker 24+ 且带 **buildx** 插件（Debian/Ubuntu 的 `docker.io` 包不带，安装：
+
+```bash
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx https://github.com/docker/buildx/releases/latest/download/buildx-v0.28.0.linux-amd64
+chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+```
+
+）；80/443/18088 需空闲（先停掉占用这些端口的服务，例如之前部署的 Caddy：`systemctl disable --now caddy`）。
 
 ```bash
 git clone https://github.com/jiqing112/firepanel.git
 cd firepanel/deploy && docker compose up -d --build
 ```
 
-容器需要 `NET_ADMIN` 能力操作宿主 netfilter；面板 18088、反代 80/443 已在 compose 中映射。
-数据（SQLite + 证书）落在 `deploy/data/`。
+- 容器需要 `NET_ADMIN` 能力操作宿主 netfilter（compose 已配置）
+- 面板 18088、反代 80/443 已映射；数据（SQLite + 证书）落在 `deploy/data/`
+- 验证：`docker ps` 可见 firepanel；`curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON
 
-### 首次初始化
+### 5. 首次初始化
 
-浏览器打开 `http://<IP>:18088` → 按向导创建管理员账号 → 进入面板。
-建议第一件事：到「系统设置」开启整站 Basic Auth，或配置面板 HTTPS（见下），避免管理端口裸奔公网。
+1. 浏览器打开 `http://<服务器IP>:18088`
+2. 按向导创建管理员账号（首个账号即 admin）
+3. 进入面板
 
-### 面板自身 HTTPS（强烈建议）
+**第一件事建议做安全加固**（二选一或都做，避免管理端口裸奔公网）：
+
+- 「系统设置 → 整站 Basic Auth」开启（浏览器原生账号框，扫描器只见 401）
+- 或按下文配置面板自身 HTTPS
+
+另外检查云厂商**安全组**已放行 18088（常见踩坑：本机能开、外网打不开，就是安全组没放行）。
+
+### 6. 面板自身 HTTPS（强烈建议）
+
+公网服务器上填公网 IP，启动即自动向 Let's Encrypt 签发证书（IP → 6.7 天短期证书；域名 → 90 天），全自动续期：
 
 ```bash
-# 云服务器：填公网 IP，启动即自动签发 Let's Encrypt IP 证书（6.7 天短期证书，全自动续期）
-sudo systemctl edit firepanel   # 追加：
+systemctl edit firepanel    # 在编辑器中追加以下内容后保存
 # [Service]
 # ExecStart=
-# ExecStart=/opt/firepanel/firepanel -listen :18088 -data-dir /opt/firepanel/data -panel-https <你的公网IP> -panel-https-port :8443
+# ExecStart=/opt/firepanel/firepanel -listen :18088 -data-dir /opt/firepanel/data \
+#           -panel-https <你的公网IP或域名> -panel-https-port :8443
+systemctl restart firepanel
 ```
 
-- 填**域名**则签发常规 90 天证书；填**内网 IP** 会签发失败并自动回退仅 HTTP
-  （内网改用「反向代理 → 手动证书 → 自动生成自签证书」，把 PEM 存成文件后配置
-  `panel_tls_cert` / `panel_tls_key`）
-- 也可直接写 `config.yaml`（见 [deploy/config.example.yaml](deploy/config.example.yaml) 全字段注释）
+- 要求该 IP/域名可从**公网访问 80 或 443**（ACME 校验）；面板与反代共用 80/443 时挑战自动处理
+- 签发失败（如内网 IP）会自动回退仅 HTTP 并在日志说明。内网环境改用：
+  面板「反向代理 → 手动证书 → 自动生成自签证书」生成 PEM 后存成文件，配置 `panel_tls_cert` / `panel_tls_key`
+- 验证：`curl https://<IP>:8443/api/v1/bootstrap`（真证书，无需 -k）
 
-### 面板整站 Basic Auth
+### 7. 面板整站 Basic Auth
 
-- **设置页**：「系统设置 → 整站 Basic Auth」，开关 + 账号密码，保存即生效
-- **凭据文件**：程序目录 `basicauth.yaml`（0600），手动编辑后约 2 秒自动热生效
-- **启动参数**：`-basic-auth "user:password"`（应急）
+| 方式 | 操作 | 生效时机 |
+|---|---|---|
+| 设置页（推荐） | 「系统设置 → 整站 Basic Auth」开关 + 账号密码 | 保存即生效 |
+| 凭据文件 | 程序目录 `basicauth.yaml`（0600），手改 | 约 2 秒自动热生效 |
+| 启动参数 | `-basic-auth "user:password"` | 重启生效 |
 
-### 配置文件
+覆盖全部页面、API 与 WebSocket。浏览器首次访问弹系统级账号框。忘记密码：回设置页重设即可覆盖。
 
-`config.yaml` 放在二进制同目录（或 `-config` 指定），命令行参数优先级更高。
-关键字段速查：
+### 8. 配置文件
+
+`config.yaml` 放在二进制同目录（或 `-config` 指定路径），命令行参数优先级更高。关键字段：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -139,30 +200,46 @@ sudo systemctl edit firepanel   # 追加：
 | server.panel_https | 空 | 面板 HTTPS 的 IP/域名（自动签发） |
 | server.basic_auth_user / pass | 空 | 整站 Basic Auth |
 | firewall.ssh_ports | [22] | 触发高危确认的 SSH 端口 |
+| firewall.backend | auto | auto / iptables / nftables |
 | proxy.backend | builtin | 反代引擎 builtin / caddy |
 
-### 升级
+完整字段见 [deploy/config.example.yaml](deploy/config.example.yaml)。
+
+### 9. 常见部署问题
+
+| 现象 | 原因与处理 |
+|---|---|
+| 外网打不开面板，本机 curl 正常 | 云安全组未放行 18088（见 §0） |
+| `curl` 返回 401 | 整站 Basic Auth 开着，带上账号密码 |
+| 反代/证书签发失败 | 80/443 被占用或不可达：环境探测对话框查看占用者；域名走 DNS-01 或寄生前置 |
+| `install.sh` 报端口放行失败 | 防火墙工具异常，手动放行后再跑一次脚本 |
+| Alpine 下连接列表为空 | 装 iproute2：`apk add iproute2`（其余功能不受影响） |
+
+### 10. 升级
 
 ```bash
-# 替换二进制并重启即可：配置、数据库、证书都在 data 目录，升级不动它们
-sudo systemctl stop firepanel
-sudo cp firepanel /opt/firepanel/firepanel && sudo systemctl start firepanel
+curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
+tar -xzf /tmp/fp.tar.gz -C /tmp/fp firepanel
+systemctl stop firepanel
+install -m 755 /tmp/fp/firepanel /opt/firepanel/firepanel
+systemctl start firepanel
 ```
 
-面板启动时会自动把 SQLite 期望状态重放到内核——重启服务器/面板后规则自动恢复，无需额外持久化配置。
+配置、数据库、证书都在 `data/` 目录，升级不动它们。面板启动时自动把 SQLite 期望状态重放到内核——重启服务器/面板后规则自动恢复，无需额外持久化配置。
 
-### 数据备份与迁移
+### 11. 数据备份与迁移
 
-- 面板内：备份迁移页导出 JSON（转发/名单）+ iptables-save / nft ruleset
-- 文件级：直接备份 `data/` 目录（firepanel.db + certs/），拷到新机同路径即完成迁移
+- 面板内：「备份迁移」页导出 JSON（转发/名单）+ iptables-save / nft ruleset
+- 文件级：直接备份 `data/` 目录（`firepanel.db` + `certs/`），拷到新机同路径即完成迁移
 
-### 卸载
+### 12. 卸载
 
 ```bash
-sudo systemctl disable --now firepanel
-sudo rm -rf /opt/firepanel /etc/systemd/system/firepanel.service
-sudo systemctl daemon-reload
-# 面板自有链（FPANEL_* / table inet firepanel）可由防火墙规则页清空，或重启后按系统持久化策略处理
+systemctl disable --now firepanel
+rm -rf /opt/firepanel /etc/systemd/system/firepanel.service
+systemctl daemon-reload
+# 面板自有链（FPANEL_* / table inet firepanel）可在面板「防火墙规则」页清空，
+# 或删除后由系统防火墙持久化策略在下次重载时自然消失
 ```
 
 ## 命令行参数
@@ -182,31 +259,6 @@ sudo systemctl daemon-reload
 环境变量：`FIREPANEL_LISTEN`、`FIREPANEL_DATA_DIR`。
 
 完整配置示例见 [deploy/config.example.yaml](deploy/config.example.yaml)（含面板 HTTPS 手动证书、Basic Auth、SSH 保护端口等全部字段）。
-
-### 云服务器启用面板 HTTPS（IP 证书自动签发）
-
-```yaml
-server:
-  listen: ":8088"
-  panel_https: "203.0.113.9"     # 你的公网 IP
-  panel_https_port: ":8443"
-```
-
-要求该 IP 可从公网访问 80/443（ACME 校验；面板与反代共用 80/443 时挑战自动处理）。
-签发失败（如内网 IP）面板自动回退仅 HTTP 并在日志说明；内网环境可在面板
-「反向代理 → 添加域名 → 手动证书 → 自动生成自签证书」，将 PEM 保存为文件后配置
-`panel_tls_cert` / `panel_tls_key` 走手动证书模式。
-
-### 面板整站 Basic Auth
-
-```yaml
-server:
-  basic_auth_user: "ops"
-  basic_auth_pass: "YourStrongPass"
-```
-
-覆盖全部页面、API 与 WebSocket，是应用层登录之外的额外防护层（浏览器原生账号框）。
-配置文件建议 `chmod 600`。也可用 `-basic-auth "user:password"` 参数临时启用。
 
 ## 发行版兼容
 
