@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -327,6 +330,108 @@ func (s *Server) SetBasicAuth(c *gin.Context) {
 	}
 	s.audit(c, "update", "settings:basicauth", nil, map[string]any{"enabled": false})
 	c.JSON(200, gin.H{"ok": true, "enabled": false})
+}
+
+/* ------------------------- 面板端口 / 自重启 ------------------------- */
+
+// GetPanelPorts 面板自身监听端口当前值与来源。
+func (s *Server) GetPanelPorts(c *gin.Context) {
+	src := func(key string) string {
+		if _, err := s.App.Store.GetSetting(key); err == nil {
+			return "settings"
+		}
+		return ""
+	}
+	c.JSON(200, gin.H{
+		"listen":     s.App.Cfg.Server.Listen,
+		"https_port": strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":"),
+		"https_enabled": s.App.Cfg.Server.PanelHTTPS != "",
+		"source_listen": src("panel_listen"),
+		"source_https":  src("panel_https_port"),
+	})
+}
+
+// validatePortNum 端口数字合法性（1-65535）。
+func validatePortNum(p string) bool {
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// SetPanelPorts 修改面板自身监听端口：试绑校验（防写错端口起不来）→ settings 持久化。
+// 不立即生效——由 UI 触发 POST /system/restart 应用。
+func (s *Server) SetPanelPorts(c *gin.Context) {
+	var req struct {
+		Listen    string `json:"listen"`
+		HTTPSPort string `json:"https_port"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "参数不合法"})
+		return
+	}
+	req.Listen = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(req.Listen), ":"))
+	req.HTTPSPort = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(req.HTTPSPort), ":"))
+	if req.Listen == "" && req.HTTPSPort == "" {
+		c.JSON(400, gin.H{"error": "至少填写一个端口"})
+		return
+	}
+	if req.Listen != "" && !validatePortNum(req.Listen) {
+		c.JSON(400, gin.H{"error": "HTTP 端口须为 1-65535"})
+		return
+	}
+	if req.HTTPSPort != "" && !validatePortNum(req.HTTPSPort) {
+		c.JSON(400, gin.H{"error": "HTTPS 端口须为 1-65535"})
+		return
+	}
+	// 试绑校验：新端口与当前监听相同则跳过（自身占用属正常）
+	tryBind := func(port string) error {
+		if port == strings.TrimPrefix(s.App.Cfg.Server.Listen, ":") || port == strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":") {
+			return nil
+		}
+		ln, err := net.Listen("tcp4", ":"+port)
+		if err != nil {
+			return fmt.Errorf("端口 %s 已被占用", port)
+		}
+		_ = ln.Close()
+		return nil
+	}
+	if req.Listen != "" {
+		if err := tryBind(req.Listen); err != nil {
+			c.JSON(400, gin.H{"error": "HTTP " + err.Error()})
+			return
+		}
+	}
+	if req.HTTPSPort != "" {
+		if err := tryBind(req.HTTPSPort); err != nil {
+			c.JSON(400, gin.H{"error": "HTTPS " + err.Error()})
+			return
+		}
+	}
+	if req.Listen != "" {
+		if err := s.App.Store.SetSetting("panel_listen", ":"+req.Listen); err != nil {
+			respErr(c, 500, err)
+			return
+		}
+	}
+	if req.HTTPSPort != "" {
+		if err := s.App.Store.SetSetting("panel_https_port", ":"+req.HTTPSPort); err != nil {
+			respErr(c, 500, err)
+			return
+		}
+	}
+	s.audit(c, "update", "settings:panel_ports", nil, map[string]any{
+		"listen": req.Listen, "https_port": req.HTTPSPort,
+	})
+	c.JSON(200, gin.H{"ok": true, "need_restart": true})
+}
+
+// RestartPanel 重启面板自身（使新端口等配置生效）。响应先返回，延迟执行重启。
+func (s *Server) RestartPanel(c *gin.Context) {
+	s.audit(c, "restart", "panel", nil, nil)
+	go func() {
+		time.Sleep(800 * time.Millisecond) // 让 HTTP 响应先送达
+		_, _ = s.App.Exec.Run(context.Background(), "systemctl", "restart", "firepanel")
+	}()
+	c.JSON(200, gin.H{"ok": true, "message": "面板正在重启，约 3-5 秒后恢复"})
 }
 
 /* ------------------------- 仪表盘 / 审计 ------------------------- */

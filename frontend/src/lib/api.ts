@@ -465,6 +465,13 @@ export const backend = {
   basicAuth: () => api.get<BasicAuthInfo>('/settings/basicauth'),
   setBasicAuth: (p: { enabled: boolean; username: string; password: string }) =>
     api.post<{ ok: boolean; enabled: boolean }>('/settings/basicauth', p),
+  panelPorts: () =>
+    api.get<{ listen: string; https_port: string; https_enabled: boolean; source_listen: string; source_https: string }>('/settings/ports'),
+  setPanelPorts: (p: { listen: string; https_port: string }) => api.post<{ ok: boolean; need_restart: boolean }>('/settings/ports', p),
+  restartPanel: () => api.post<{ ok: boolean; message: string }>('/system/restart'),
+  basicAuth: () => api.get<BasicAuthInfo>('/settings/basicauth'),
+  setBasicAuth: (p: { enabled: boolean; username: string; password: string }) =>
+    api.post<{ ok: boolean; enabled: boolean }>('/settings/basicauth', p),
   createUser: (u: { username: string; password: string; role: string }) =>
     api.post<{ item: User }>('/users', u),
   deleteUser: (id: number) => api.delete<{ ok: boolean }>(`/users/${id}`),

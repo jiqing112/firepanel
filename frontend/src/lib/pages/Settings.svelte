@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Settings as SettingsIcon, UserPlus, Trash2, ShieldCheck, Server, Cpu, Terminal, HardDrive, Lock } from '@lucide/svelte';
+  import { Settings as SettingsIcon, UserPlus, Trash2, ShieldCheck, Server, Cpu, Terminal, HardDrive, Lock, Network } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -17,19 +17,23 @@
   let users = $state<User[]>([]);
   let loading = $state(true);
   let baInfo = $state<BasicAuthInfo | null>(null);
+  let portsInfo = $state<{ listen: string; https_port: string; https_enabled: boolean } | null>(null);
 
   async function load() {
     loading = true;
     try {
-      const [i, u, ba] = await Promise.all([
+      const [i, u, ba, ports] = await Promise.all([
         backend.systemInfo(),
         backend.users().then((r) => r.items),
         backend.basicAuth().catch(() => null),
+        backend.panelPorts().catch(() => null),
       ]);
       info = i;
       users = u;
       baInfo = ba;
+      portsInfo = ports;
       primeBA();
+      primePorts();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -91,6 +95,56 @@
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       submitting = false;
+    }
+  }
+
+  /* 面板端口 */
+  let portsForm = $state({ listen: '', https: '' });
+  let portsLoaded = $state(false);
+  let portsSaving = $state(false);
+  let restartPending = $state(false);
+  let restarting = $state(false);
+
+  function primePorts() {
+    if (portsLoaded) return;
+    portsForm = {
+      listen: (info?.listen ?? '18088').replace(/^:/, ''),
+      https: '',
+    };
+    portsLoaded = true;
+  }
+
+  const portsDirty = $derived(portsForm.listen.trim() !== '' || portsForm.https.trim() !== '');
+
+  async function savePorts() {
+    if (portsSaving) return;
+    portsSaving = true;
+    try {
+      await backend.setPanelPorts({ listen: portsForm.listen.trim(), https_port: portsForm.https.trim() });
+      restartPending = true;
+      toast.success('端口已保存', { description: '需要重启面板才能生效' });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      portsSaving = false;
+    }
+  }
+
+  async function restartPanel() {
+    if (restarting) return;
+    restarting = true;
+    try {
+      await backend.restartPanel();
+      toast.success('面板正在重启…', { description: '几秒后自动恢复，刷新页面即可' });
+      portsLoaded = false;
+      // 等重启完成再拉一次状态
+      setTimeout(() => {
+        load();
+        restarting = false;
+      }, 5000);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+      restarting = false;
     }
   }
 
@@ -225,6 +279,42 @@
     <p class="mt-4 text-[11.5px] leading-relaxed text-muted-foreground">
       管理员可变更全部配置；只读用户仅可查看面板与日志。全部变更都会记录在
       <a class="text-primary hover:underline" href="#/logs">操作审计</a> 中。
+    </p>
+  </Card>
+
+  <!-- 面板端口 -->
+  <Card class="p-5 shadow-soft xl:col-span-3">
+    <div class="flex flex-wrap items-center gap-2.5">
+      <h2 class="flex items-center gap-2 text-sm font-semibold">
+        <Network size={15} class="text-primary" />
+        面板端口
+      </h2>
+      <Badge variant="outline" class="text-[10px] bg-muted text-muted-foreground ring-border">
+        当前 HTTP {portsInfo?.listen ?? '—'} · HTTPS {portsInfo?.https_port || '未启用'}
+      </Badge>
+      <span class="ml-auto text-[11px] text-muted-foreground">保存后需重启面板生效</span>
+    </div>
+    <div class="mt-3 flex flex-wrap items-end gap-3">
+      <div class="grid gap-1.5">
+        <Label class="text-[11px] text-muted-foreground">HTTP 端口</Label>
+        <Input class="h-9 w-36 font-mono" inputmode="numeric" placeholder="18088" bind:value={portsForm.listen} />
+      </div>
+      <div class="grid gap-1.5">
+        <Label class="text-[11px] text-muted-foreground">HTTPS 端口 <span class="text-[10px]">（需已启用 -panel-https）</span></Label>
+        <Input class="h-9 w-36 font-mono" inputmode="numeric" placeholder="18443" bind:value={portsForm.https} />
+      </div>
+      <Button class="h-9" disabled={portsSaving || !portsDirty} onclick={savePorts}>
+        {portsSaving ? '保存中…' : '保存'}
+      </Button>
+      {#if restartPending}
+        <Button class="h-9" variant="destructive" disabled={restarting} onclick={restartPanel}>
+          {restarting ? '重启中…' : '重启面板生效'}
+        </Button>
+      {/if}
+    </div>
+    <p class="mt-2.5 text-[11px] leading-relaxed text-muted-foreground">
+      端口保存时自动试绑校验（被占用会拒绝）；HTTPS 端口仅在已配置面板 HTTPS（-panel-https 参数）时生效。
+      重启期间面板不可访问约 3-5 秒，之后请用新地址访问。
     </p>
   </Card>
 

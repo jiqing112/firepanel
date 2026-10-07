@@ -107,6 +107,13 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) (*App, error) {
 	if v, err := st.GetSetting("proxy_https_addr"); err == nil && v != "" {
 		httpsAddr = v
 	}
+	// 面板自身端口（HTTP listen / HTTPS panel_https_port）的设置页覆盖
+	if v, err := st.GetSetting("panel_listen"); err == nil && v != "" {
+		cfg.Server.Listen = v
+	}
+	if v, err := st.GetSetting("panel_https_port"); err == nil && v != "" {
+		cfg.Server.PanelHTTPSPort = v
+	}
 	a.Proxy = proxy.NewManager(log, proxy.Options{
 		Mode:       mode,
 		HTTPAddr:   httpAddr,
