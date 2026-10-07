@@ -89,7 +89,3 @@ func EnsureCaddyService(ctx context.Context, runner Runner) error {
 	return nil
 }
 
-// StopCaddyService 停用 Caddy 托管服务（切回内置引擎前释放 80/443）。
-func StopCaddyService(ctx context.Context, runner Runner) {
-	_, _ = runner.Run(ctx, "systemctl", "disable", "--now", "caddy")
-}

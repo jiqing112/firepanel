@@ -512,11 +512,11 @@ func (s *Server) SetProxyEngine(c *gin.Context) {
 			s.emitProxyEvent("proxy_caddy_error", "Caddy 服务启动失败", err.Error())
 		}
 	} else if req.Engine == proxy.ModeBuiltin {
-		proxy.StopCaddyService(ctxSvc, s.App.Exec)
-		// 校验停用结果：caddy 残留会占着 80/443，builtin 无法接管
+		// 不自动停 Caddy：它可能是 80/443 的合法占用者（模式2 场景，如用户自装的 Caddy/Nginx）。
+		// 面板只释放自己的监听；若 Caddy 仍占用目标端口，builtin 绑定失败会以事件报出。
 		if proxy.CaddyRunning(ctxSvc, s.App.Cfg.Proxy.CaddyAdmin, 2*time.Second) {
-			s.emitProxyEvent("proxy_caddy_error", "Caddy 服务未能完全停用",
-				"80/443 可能仍被 Caddy 占用，内置引擎接管会失败；请手动执行 systemctl stop caddy")
+			s.emitProxyEvent("proxy_caddy_running", "检测到 Caddy 仍在运行",
+				"若其占用 80/443，内置引擎将无法绑定这些端口（可改用非标端口，或手动 systemctl stop caddy 后重试）")
 		}
 	}
 	s.audit(c, "update", "proxy_engine", nil, req)
