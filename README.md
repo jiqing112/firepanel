@@ -27,7 +27,7 @@ SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*`
 
 ## 安装部署
 
-### 0. 环境要求与准备
+### 环境要求与准备
 
 | 项 | 要求 | 检查命令 |
 |---|---|---|
@@ -41,7 +41,7 @@ SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*`
 - 如需反代/证书：80/443（或自定义端口）可监听即可；DNS-01 挑战则无端口要求
 - **云服务器务必放行安全组**：面板端口（18088）与反代端口（80/443）要在云厂商控制台的安全组/防火墙里放行——这是「安装后面板打不开」的最常见原因
 
-### 1. 获取安装包
+### 获取安装包
 
 三种途径任选：
 
@@ -66,7 +66,7 @@ scp dist/firepanel user@server:/tmp/fp/
 
 **c. 从 Releases 页手动下载**：https://github.com/jiqing112/firepanel/releases
 
-### 2. 方式一：一键安装脚本（推荐）
+### 方式一：一键安装脚本（推荐）
 
 把 `install.sh` 与 `firepanel` 放在一起执行（Release 包解压后天然满足）：
 
@@ -95,7 +95,7 @@ systemctl is-active firepanel          # active
 curl http://127.0.0.1:18088/api/v1/bootstrap    # 返回 JSON
 ```
 
-### 3. 方式二：手动部署（不用脚本）
+### 方式二：手动部署（不用脚本）
 
 适合想完全掌控每一步的场景。
 
@@ -126,7 +126,7 @@ iptables -I INPUT 1 -p tcp --dport 18088 -j ACCEPT
 
 验证：`systemctl is-active firepanel` 为 active，且 `curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON。
 
-### 4. 方式三：Docker
+### 方式三：Docker
 
 前置：Docker 24+ 且带 **buildx** 插件（Debian/Ubuntu 的 `docker.io` 包不带，安装：
 
@@ -147,7 +147,7 @@ cd firepanel/deploy && docker compose up -d --build
 - 面板 18088、反代 80/443 已映射；数据（SQLite + 证书）落在 `deploy/data/`
 - 验证：`docker ps` 可见 firepanel；`curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON
 
-### 5. 首次初始化
+### 首次初始化
 
 1. 浏览器打开 `http://<服务器IP>:18088`
 2. 按向导创建管理员账号（首个账号即 admin）
@@ -160,7 +160,7 @@ cd firepanel/deploy && docker compose up -d --build
 
 另外检查云厂商**安全组**已放行 18088（常见踩坑：本机能开、外网打不开，就是安全组没放行）。
 
-### 6. 面板自身 HTTPS（强烈建议）
+### 面板自身 HTTPS（强烈建议）
 
 公网服务器上填公网 IP，启动即自动向 Let's Encrypt 签发证书（IP → 6.7 天短期证书；域名 → 90 天），全自动续期：
 
@@ -178,7 +178,7 @@ systemctl restart firepanel
   面板「反向代理 → 手动证书 → 自动生成自签证书」生成 PEM 后存成文件，配置 `panel_tls_cert` / `panel_tls_key`
 - 验证：`curl https://<IP>:8443/api/v1/bootstrap`（真证书，无需 -k）
 
-### 7. 面板整站 Basic Auth
+### 面板整站 Basic Auth
 
 | 方式 | 操作 | 生效时机 |
 |---|---|---|
@@ -188,7 +188,7 @@ systemctl restart firepanel
 
 覆盖全部页面、API 与 WebSocket。浏览器首次访问弹系统级账号框。忘记密码：回设置页重设即可覆盖。
 
-### 8. 配置文件
+### 配置文件
 
 `config.yaml` 放在二进制同目录（或 `-config` 指定路径），命令行参数优先级更高。关键字段：
 
@@ -205,7 +205,7 @@ systemctl restart firepanel
 
 完整字段见 [deploy/config.example.yaml](deploy/config.example.yaml)。
 
-### 9. 反向代理与已有 80/443 服务共存（模式 2）
+### 反向代理与已有 80/443 服务共存（模式 2）
 
 80/443 被其他程序占用时，面板反代改用非标端口（如 8180/8143），并用**寄生前置**解决证书签发：
 让占用者把 `/.well-known/acme-challenge/` 路径转发到面板的挑战端口——面板内「环境探测」可一键生成 Caddy/Nginx 片段。
@@ -220,17 +220,17 @@ systemctl restart firepanel
 
 443 的 TLS 终结与证书加载完全归占用者，寄生前置只转发 80 上的一个路径。
 面板自身 HTTPS（8443/自定义）在寄生前置下同样可签发/续期（挑战经占用者转发到面板）。
-### 9. 常见部署问题
+### 常见部署问题排查
 
 | 现象 | 原因与处理 |
 |---|---|
-| 外网打不开面板，本机 curl 正常 | 云安全组未放行 18088（见 §0） |
+| 外网打不开面板，本机 curl 正常 | 云安全组未放行 18088（见「环境要求与准备」） |
 | `curl` 返回 401 | 整站 Basic Auth 开着，带上账号密码 |
 | 反代/证书签发失败 | 80/443 被占用或不可达：环境探测对话框查看占用者；域名走 DNS-01 或寄生前置 |
 | `install.sh` 报端口放行失败 | 防火墙工具异常，手动放行后再跑一次脚本 |
 | Alpine 下连接列表为空 | 装 iproute2：`apk add iproute2`（其余功能不受影响） |
 
-### 10. 升级
+### 升级
 
 ```bash
 curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
@@ -242,12 +242,12 @@ systemctl start firepanel
 
 配置、数据库、证书都在 `data/` 目录，升级不动它们。面板启动时自动把 SQLite 期望状态重放到内核——重启服务器/面板后规则自动恢复，无需额外持久化配置。
 
-### 11. 数据备份与迁移
+### 数据备份与迁移
 
 - 面板内：「备份迁移」页导出 JSON（转发/名单）+ iptables-save / nft ruleset
 - 文件级：直接备份 `data/` 目录（`firepanel.db` + `certs/`），拷到新机同路径即完成迁移
 
-### 12. 卸载
+### 卸载
 
 ```bash
 systemctl disable --now firepanel
