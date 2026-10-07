@@ -1,0 +1,23 @@
+# 构建产物
+dist/
+backend/dist/
+*.exe
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# 运行时数据（含数据库与证书，绝不入库）
+data/
+*.db
+*.sqlite*
+basicauth.yaml
+certs/
+
+# 日志
+*.log
+
+# 本机工具目录
+.zcode/
+.vscode/
+.idea/

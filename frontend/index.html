@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2338bdf8'/%3E%3Cstop offset='1' stop-color='%232563eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M16 6c1.2 3-2.4 4.6-2.4 7.6 0 1.5 1 2.6 2.4 2.9-.4-1.7 1.2-2.4 1.6-3.9 1.9 1.4 3.4 3.4 3.4 5.7 0 3.1-2.6 5.7-5.8 5.7s-6.2-2.5-6.2-5.8C9 13 14.4 11 16 6z' fill='white'/%3E%3C/svg%3E"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="FirePanel — Linux 防火墙可视化管理面板" />
+    <title>FirePanel · Linux 防火墙管理面板</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      // 临时诊断：捕获所有未处理错误（提交前移除）
+      window.__errs = [];
+      window.addEventListener('error', function (e) {
+        window.__errs.push('E: ' + e.message + ' @ ' + (e.filename || '').slice(-30) + ':' + e.lineno + ':' + e.colno);
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        window.__errs.push('P: ' + String(e.reason).slice(0, 300));
+      });
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
