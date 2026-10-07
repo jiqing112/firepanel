@@ -17,7 +17,7 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "8080:8080"   # 面板
+      - "18088:18088" # 面板
       - "80:80"       # 反代 HTTP（含 ACME HTTP-01）
       - "443:443"     # 反代 HTTPS
     environment:

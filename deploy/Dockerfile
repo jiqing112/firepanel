@@ -14,6 +14,6 @@ RUN apk add --no-cache ca-certificates nftables iptables ip6tables tzdata && \
 COPY --from=build /out/firepanel /usr/local/bin/firepanel
 # 需要操作宿主内核 netfilter：--cap-add=NET_ADMIN（compose 已带）
 VOLUME /data
-EXPOSE 8080 80 443
+EXPOSE 18088 80 443
 ENTRYPOINT ["/usr/local/bin/firepanel"]
-CMD ["-listen", ":8080", "-data-dir", "/data"]
+CMD ["-listen", ":18088", "-data-dir", "/data"]

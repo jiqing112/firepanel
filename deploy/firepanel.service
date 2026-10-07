@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/firepanel/firepanel -listen :8088 -data-dir /opt/firepanel/data
+ExecStart=/opt/firepanel/firepanel -listen :18088 -data-dir /opt/firepanel/data
 Restart=on-failure
 RestartSec=3
 

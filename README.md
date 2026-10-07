@@ -2,7 +2,6 @@
 
 统一管理 **iptables / nftables** 的 Web 面板，单二进制部署（Go + 内嵌 Svelte 前端 + 纯 Go SQLite）。
 
-![原型截图](docs/prototype/07-vm-dashboard.png)
 
 ## 核心特性
 
@@ -26,39 +25,140 @@
 SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*` / `table inet firepanel`）→ 后端原子应用；
 漂移检测对比期望与内核；面板永不触碰 Docker / firewalld / incus 等已有规则。
 
-## 快速开始
+## 安装部署
 
-### 一键安装（推荐）
+### 环境要求
 
-```bash
-sudo bash deploy/install.sh            # 安装到 /opt/firepanel，端口 8088
-```
+- Linux x86_64（amd64）/ arm64，内核 ≥ 4.9（nftables 或 iptables 任一）
+- 面板本身零依赖：单二进制已内嵌前端与 SQLite；仅防火墙功能需要系统装有 nftables 或 iptables（安装脚本会自动补装）
+- 如需反代/证书功能：80/443（或自定义端口）可监听；DNS-01 挑战则无端口要求
 
-脚本自动：识别发行版 → 安装 nftables/iptables（缺失时）→ 备份现有规则 → 放行面板端口 → 注册 systemd 服务。
-
-### 手动部署
+### 方式一：一键安装脚本（推荐）
 
 ```bash
-bash scripts/build.sh linux            # 产物 dist/firepanel（~17MB）
-scp dist/firepanel user@host:/opt/firepanel/
-# 目标机：
-/opt/firepanel/firepanel -listen :8088 -data-dir /opt/firepanel/data
+# 1. 构建或下载二进制（见下方「源码构建」/ GitHub Releases）
+bash scripts/build.sh linux           # 产物 dist/firepanel
+
+# 2. 上传到服务器，与 deploy/install.sh 同目录执行
+scp dist/firepanel user@server:/tmp/deploy/
+scp -r deploy user@server:/tmp/deploy/
+ssh user@server
+cd /tmp/deploy && sudo bash deploy/install.sh          # 默认 /opt/firepanel + 端口 18088
+# 自定义：sudo bash deploy/install.sh /opt/firepanel 18088
 ```
 
-### Docker
+脚本自动完成：识别发行版 → 安装 nftables/iptables（缺失时）→ 备份现有防火墙规则（/tmp 快照）→
+放行面板端口 → 注册并启动 systemd 服务（开机自启）。完成后浏览器访问 `http://<服务器IP>:18088`，
+首次访问按向导创建管理员账号。
+
+> GitHub Actions 会在每次打 tag（`v*`）时自动构建 amd64/arm64 二进制并发布到 Releases，
+> 可直接下载 `firepanel-linux-amd64.tar.gz` 解压后执行上面的第 2 步。
+
+### 方式二：手动部署（不用脚本）
 
 ```bash
-cd deploy && docker compose up -d      # 需 NET_ADMIN 能力操作宿主 netfilter
+# 目标机上
+sudo mkdir -p /opt/firepanel/data
+sudo cp firepanel /opt/firepanel/ && sudo chmod +x /opt/firepanel/firepanel
+
+# systemd 服务（模板见 deploy/firepanel.service）
+sudo tee /etc/systemd/system/firepanel.service >/dev/null <<'UNIT'
+[Unit]
+Description=FirePanel firewall web panel
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/opt/firepanel/firepanel -listen :18088 -data-dir /opt/firepanel/data
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload && sudo systemctl enable --now firepanel
+
+# 别忘了放行面板端口（或在面板「防火墙规则 / IP 名单」里管理）
 ```
 
-首次访问 `http://<ip>:8088`，按向导创建管理员。
+### 方式三：Docker
+
+```bash
+cd deploy && docker compose up -d --build
+```
+
+容器需要 `NET_ADMIN` 能力操作宿主 netfilter；面板 18088、反代 80/443 已在 compose 中映射。
+数据（SQLite + 证书）落在 `deploy/data/`。
+
+### 首次初始化
+
+浏览器打开 `http://<IP>:18088` → 按向导创建管理员账号 → 进入面板。
+建议第一件事：到「系统设置」开启整站 Basic Auth，或配置面板 HTTPS（见下），避免管理端口裸奔公网。
+
+### 面板自身 HTTPS（强烈建议）
+
+```bash
+# 云服务器：填公网 IP，启动即自动签发 Let's Encrypt IP 证书（6.7 天短期证书，全自动续期）
+sudo systemctl edit firepanel   # 追加：
+# [Service]
+# ExecStart=
+# ExecStart=/opt/firepanel/firepanel -listen :18088 -data-dir /opt/firepanel/data -panel-https <你的公网IP> -panel-https-port :8443
+```
+
+- 填**域名**则签发常规 90 天证书；填**内网 IP** 会签发失败并自动回退仅 HTTP
+  （内网改用「反向代理 → 手动证书 → 自动生成自签证书」，把 PEM 存成文件后配置
+  `panel_tls_cert` / `panel_tls_key`）
+- 也可直接写 `config.yaml`（见 [deploy/config.example.yaml](deploy/config.example.yaml) 全字段注释）
+
+### 面板整站 Basic Auth
+
+- **设置页**：「系统设置 → 整站 Basic Auth」，开关 + 账号密码，保存即生效
+- **凭据文件**：程序目录 `basicauth.yaml`（0600），手动编辑后约 2 秒自动热生效
+- **启动参数**：`-basic-auth "user:password"`（应急）
+
+### 配置文件
+
+`config.yaml` 放在二进制同目录（或 `-config` 指定），命令行参数优先级更高。
+关键字段速查：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| server.listen | :18088 | 面板 HTTP 监听 |
+| server.data_dir | /var/lib/firepanel | SQLite 与证书目录 |
+| server.proxy_http / proxy_https | :80 / :443 | 反代监听（三种形态见文件内注释） |
+| server.panel_https | 空 | 面板 HTTPS 的 IP/域名（自动签发） |
+| server.basic_auth_user / pass | 空 | 整站 Basic Auth |
+| firewall.ssh_ports | [22] | 触发高危确认的 SSH 端口 |
+| proxy.backend | builtin | 反代引擎 builtin / caddy |
+
+### 升级
+
+```bash
+# 替换二进制并重启即可：配置、数据库、证书都在 data 目录，升级不动它们
+sudo systemctl stop firepanel
+sudo cp firepanel /opt/firepanel/firepanel && sudo systemctl start firepanel
+```
+
+面板启动时会自动把 SQLite 期望状态重放到内核——重启服务器/面板后规则自动恢复，无需额外持久化配置。
+
+### 数据备份与迁移
+
+- 面板内：备份迁移页导出 JSON（转发/名单）+ iptables-save / nft ruleset
+- 文件级：直接备份 `data/` 目录（firepanel.db + certs/），拷到新机同路径即完成迁移
+
+### 卸载
+
+```bash
+sudo systemctl disable --now firepanel
+sudo rm -rf /opt/firepanel /etc/systemd/system/firepanel.service
+sudo systemctl daemon-reload
+# 面板自有链（FPANEL_* / table inet firepanel）可由防火墙规则页清空，或重启后按系统持久化策略处理
+```
 
 ## 命令行参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-config` | 自动探测 | YAML 配置文件路径（默认尝试程序目录 / 工作目录的 `config.yaml`） |
-| `-listen` | `:8080` | 面板 HTTP 监听 |
+| `-listen` | `:18088` | 面板 HTTP 监听 |
 | `-data-dir` | `/var/lib/firepanel` | SQLite 与证书目录 |
 | `-backend` | `auto` | `auto` / `iptables` / `nftables` |
 | `-proxy-http` | `:80` | 反代 HTTP 监听（80 被占用时改，如 `:8180`） |

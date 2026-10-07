@@ -1,0 +1,64 @@
+name: Release
+
+# 打 tag（v*）或手动触发：跑测试 → 构建前端+后端 → 打包多架构二进制 → 发布 GitHub Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 前端构建并同步到 embed 目录
+        run: |
+          cd frontend
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          rm -rf backend/internal/web/dist
+          cp -r frontend/dist backend/internal/web/dist
+
+      - name: 后端测试
+        run: cd backend && CGO_ENABLED=0 go test ./...
+
+      - name: 构建多架构二进制
+        run: |
+          cd backend
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/firepanel-linux-amd64 ./cmd/firepanel
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../dist/firepanel-linux-arm64 ./cmd/firepanel
+
+      - name: 打包（二进制 + 安装脚本 + 配置示例）
+        run: |
+          mkdir -p release
+          for arch in amd64 arm64; do
+            dir=release/firepanel-linux-$arch
+            mkdir -p "$dir"
+            cp dist/firepanel-linux-$arch "$dir/firepanel"
+            cp deploy/install.sh deploy/config.example.yaml "$dir/"
+            cp -r deploy/firepanel.service "$dir/"
+            tar -czf "release/firepanel-linux-$arch.tar.gz" -C "$dir" .
+          done
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

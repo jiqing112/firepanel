@@ -1,6 +1,6 @@
 # FirePanel API 文档
 
-Base URL: `http://<host>:8088/api/v1`（与面板同源部署）
+Base URL: `http://<host>:18088/api/v1`（与面板同源部署）
 认证：除 `GET /bootstrap`、`POST /setup`、`POST /auth/login` 外，全部接口需要 JWT，优先用请求头 `X-Panel-Token: <token>`（与整站 Basic Auth 共存），兼容 `Authorization: Bearer <token>`。
 Token 通过登录/初始化获取，有效期默认 12 小时。
 若在设置页开启了整站 Basic Auth，所有请求（含登录）还需通过 HTTP Basic 认证（脚本示例：`curl -u user:pass ...`）。

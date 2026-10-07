@@ -4,7 +4,7 @@
 
 server:
   # 面板 HTTP 监听地址
-  listen: ":8088"
+  listen: ":18088"
 
   # 数据目录（SQLite 与证书）
   data_dir: "/opt/firepanel/data"

@@ -29,7 +29,7 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen     string `yaml:"listen"`            // 如 ":8080"
+	Listen     string `yaml:"listen"`            // 如 ":18088"
 	DataDir    string `yaml:"data_dir"`          // SQLite 与运行数据目录
 	ProxyHTTP  string `yaml:"proxy_http"`        // 反代 HTTP 监听，默认 ":80"
 	ProxyHTTPS string `yaml:"proxy_https"`       // 反代 HTTPS 监听，默认 ":443"
@@ -71,7 +71,7 @@ type LoggingConfig struct {
 func defaults() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Listen:         ":8080",
+			Listen:         ":18088",
 			DataDir:        "/var/lib/firepanel",
 			ProxyHTTP:      ":80",
 			ProxyHTTPS:     ":443",

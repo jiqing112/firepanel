@@ -5,7 +5,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${1:-/opt/firepanel}"
-PANEL_PORT="${2:-8088}"
+PANEL_PORT="${2:-18088}"
 BIN_URL="${FIREPANEL_BIN_URL:-}"   # 覆盖下载地址（离线安装时可预先放置 firepanel 到同级目录）
 SERVICE=firepanel
 
