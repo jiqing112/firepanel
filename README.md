@@ -62,11 +62,11 @@ bash install.sh                        # 默认 /opt/firepanel + 端口 18088
 ### 方式二：手动部署（不用脚本）
 
 ```bash
-# 目标机上：下载并解压（Release 包）
+# 目标机上：下载并解压（Release 包，root 执行）
 curl -fsSL -o /tmp/fp.tar.gz https://github.com/jiqing112/firepanel/releases/latest/download/firepanel-linux-amd64.tar.gz
 mkdir -p /tmp/fp && tar -xzf /tmp/fp.tar.gz -C /tmp/fp
-sudo mkdir -p /opt/firepanel/data
-sudo install -m 755 /tmp/fp/firepanel /opt/firepanel/firepanel
+mkdir -p /opt/firepanel/data
+install -m 755 /tmp/fp/firepanel /opt/firepanel/firepanel
 
 # systemd 服务（模板见 deploy/firepanel.service）
 sudo tee /etc/systemd/system/firepanel.service >/dev/null <<'UNIT'
