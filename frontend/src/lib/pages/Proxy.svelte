@@ -182,12 +182,21 @@
 
   const nginxSnippet = $derived(`# Nginx（占用 80 的前置）— 加入对应 server {} 块
 # 把 ACME 挑战路径转发给 FirePanel（反代 HTTP 监听 ${env?.listen_http ?? ':8080'}）
+#
+# ✅ 不影响 Nginx 自身证书的签发与使用（仅多转发一个路径）
+# ⚠ certbot 冲突警示：若该 server 由 certbot --nginx 管理，它插入的
+#   location ^~ /.well-known/acme-challenge/ 优先级更高，会让面板的挑战请求
+#   落到 certbot 的目录（404）→ 面板签发失败。
+#   处理：两条 location 并存（certbot 答自己的、面板答自己的），或面板改用 DNS-01。
 location /.well-known/acme-challenge/ {
     proxy_pass http://127.0.0.1:${snippetPort};
     proxy_set_header Host $host;
 }`);
 
   const caddySnippet = $derived(`# Caddyfile（占用 80 的前置 Caddy）— 在对应站点块内加入
+# ✅ 不影响 Caddy 自身证书的签发：Caddy 的内置 ACME 挑战应答优先于站点路由，
+#    它签发自己的证书时不会走到本转发块；面板签发时请求才会经此处转发。
+#    两者共存，互不干扰。
 handle_path /.well-known/acme-challenge/* {
     reverse_proxy 127.0.0.1:${snippetPort}
 }`);

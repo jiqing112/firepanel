@@ -1,5 +1,16 @@
 # 常见问题（FAQ）
 
+## 80/443 被其他程序占用，面板反向代理还能用吗？
+
+能（模式 2）：面板反代改用非标端口（如 8180/8143），证书签发用**寄生前置**或 **DNS-01**：
+
+- **寄生前置**：让占用者把 `/.well-known/acme-challenge/` 转发到面板挑战端口。面板「环境探测」可一键生成 Caddy/Nginx 片段。
+  - Caddy 场景：其内置 ACME 应答优先于站点路由，签自己的证书不受转发块影响，两者互不干扰；
+  - Nginx + certbot 场景：注意 certbot 的 `location ^~` 优先级更高，需把两条 location 合并共存，否则面板签发会 404；
+- **DNS-01**：无端口要求，泛域名必选；在面板「DNS-01 凭据」配置服务商密钥即可。
+
+注意：纯 IP 证书没有 DNS-01，80/443 被占时只能靠寄生前置（LE 校验 HTTP 路径）或手动证书。
+
 ## 面板会不会和 Docker / firewalld / ufw 冲突？
 
 不会。面板只读写自己的链/表（iptables: `FPANEL_INPUT/FPANEL_FORWARD/FPANEL_DNAT/FPANEL_SNAT`；
