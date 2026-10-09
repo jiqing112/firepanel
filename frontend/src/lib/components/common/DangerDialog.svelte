@@ -7,12 +7,14 @@
   import { AlertTriangle } from '@lucide/svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
-  import { backend, type SyncResult } from '$lib/api';
+  import { backend, onWSMessage, type SyncResult } from '$lib/api';
   import { toast } from 'svelte-sonner';
 
   let { sync, onClose }: { sync: SyncResult; onClose: (resolved: 'confirmed' | 'cancelled') => void } = $props();
 
+  // svelte-ignore state_referenced_locally -- 组件实例随弹窗挂载/销毁，props 恒为打开时传入值，有意捕获初始值
   let phase = $state<'pending' | 'applied'>(sync.applied ? 'applied' : 'pending');
+  // svelte-ignore state_referenced_locally -- 同上：倒计时初值取自打开时的 sync
   let countdown = $state(phase === 'pending' ? (sync.delay_sec ?? 60) : (sync.confirm_sec ?? 90));
   let busy = $state(false);
   let done = $state(false);
@@ -23,6 +25,36 @@
       countdown = Math.max(0, countdown - 1);
     }, 1000);
     return () => clearInterval(t);
+  });
+
+  // 服务端事件驱动弹窗收尾：超时回滚 / 其他会话确认或撤销时，本地不再停留
+  $effect(() => {
+    const off = onWSMessage((topic, data) => {
+      if (topic !== 'events' || done) return;
+      const e = data as { type?: string; token?: string; message?: string };
+      if (!e.type || (e.token && sync.token && e.token !== sync.token)) return;
+      if (e.type === 'rollback') {
+        done = true;
+        toast.warning('确认窗口已超时，规则已自动回滚');
+        onClose('cancelled');
+      } else if (e.type === 'danger_applied' && phase === 'pending') {
+        // 未点「立即生效」、由服务端延时看门狗自动生效
+        phase = 'applied';
+        countdown = sync.confirm_sec ?? 90;
+        toast.info('高危规则已生效', { description: `${countdown} 秒内请确认保留，否则自动回滚` });
+      } else if (e.type === 'apply_ok') {
+        if ((e.message ?? '').includes('已确认') && phase !== 'pending') {
+          done = true;
+          toast.success('已确认保留新规则');
+          onClose('confirmed');
+        } else if ((e.message ?? '').includes('已撤销')) {
+          done = true;
+          toast.info('已撤销，相关数据已恢复');
+          onClose('cancelled');
+        }
+      }
+    });
+    return off;
   });
 
   async function applyNow() {

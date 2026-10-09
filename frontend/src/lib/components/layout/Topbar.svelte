@@ -4,6 +4,8 @@
   import { Badge } from '$lib/components/ui/badge';
   import { toggleTheme, theme } from '$lib/theme.svelte';
   import { layout } from './state.svelte';
+  import { fwinfo, loadFwInfo } from '$lib/stores/fwinfo.svelte';
+  import { session } from '$lib/stores/session.svelte';
 
   let { title, subtitle }: { title: string; subtitle?: string } = $props();
 
@@ -12,6 +14,10 @@
     refreshing = true;
     setTimeout(() => (refreshing = false), 600);
   }
+
+  $effect(() => {
+    loadFwInfo();
+  });
 </script>
 
 <header class="sticky top-0 z-20 border-b border-border/70 bg-background/95">
@@ -28,9 +34,9 @@
     </div>
 
     <div class="flex items-center gap-1.5">
-      <Badge variant="secondary" class="hidden font-mono text-[11px] sm:inline-flex">nftables</Badge>
+      <Badge variant="secondary" class="hidden font-mono text-[11px] sm:inline-flex">{fwinfo.backend || '…'}</Badge>
       <Button variant="ghost" size="icon" class="text-muted-foreground" onclick={refresh} aria-label="刷新">
-        <RefreshCw size={16} class="{refreshing ? 'animate-spin' : ''}" />
+        <RefreshCw size={16} class={refreshing ? 'animate-spin' : ''} />
       </Button>
       <Button variant="ghost" size="icon" class="text-muted-foreground" onclick={toggleTheme} aria-label="切换主题">
         {#if theme.resolved === 'dark'}
@@ -41,9 +47,9 @@
       </Button>
       <div
         class="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 to-blue-600 text-xs font-semibold text-white shadow-soft select-none"
-        title="admin"
+        title={session.user?.username || ''}
       >
-        A
+        {(session.user?.username?.[0] || '?').toUpperCase()}
       </div>
     </div>
   </div>

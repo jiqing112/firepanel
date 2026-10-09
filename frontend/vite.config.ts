@@ -14,10 +14,15 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8088',
+        target: 'http://127.0.0.1:18088',
         changeOrigin: true,
         ws: true,
       },
     },
+  },
+  build: {
+    // 单面板应用整包交付（go:embed 单二进制），不做代码分割；
+    // 前端全量包超过默认 500kB 提示阈值属预期形态
+    chunkSizeWarningLimit: 1500,
   },
 })

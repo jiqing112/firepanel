@@ -22,7 +22,7 @@
       {@render icon()}
     </div>
   {/if}
-  <div class="{compact ? 'text-sm' : 'text-[15px]'} font-medium">{title}</div>
+  <div class={compact ? 'text-sm font-medium' : 'text-[15px] font-medium'}>{title}</div>
   {#if desc}
     <p class="max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">{desc}</p>
   {/if}

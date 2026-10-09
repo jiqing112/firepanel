@@ -1,6 +1,6 @@
 <script lang="ts">
   import { initTheme } from '$lib/theme.svelte';
-  import { router, navigate, parsePath } from '$lib/router.svelte';
+  import { router, navigate, parsePath, initRouter } from '$lib/router.svelte';
   import { session, initSession } from '$lib/stores/session.svelte';
   import { navGroups } from '$lib/nav';
   import { t, type I18nKey } from '$lib/i18n';
@@ -28,7 +28,6 @@
   import { fade } from 'svelte/transition';
 
   let booted = $state(false);
-  let needsSetup = $state(false);
 
   $effect(() => {
     initTheme();
@@ -36,10 +35,8 @@
   });
 
   async function initRouterSafe() {
-    const { initRouter } = await import('$lib/router.svelte');
     initRouter();
-    const r = await initSession();
-    needsSetup = r.needsSetup;
+    await initSession();
     booted = true;
   }
 
@@ -50,7 +47,7 @@
   // 路由守卫
   $effect(() => {
     if (!booted) return;
-    if (needsSetup && pathname !== '/setup') {
+    if (session.needsSetup && pathname !== '/setup') {
       navigate('/setup', true);
       return;
     }
@@ -108,7 +105,7 @@
 
 <TooltipProvider delayDuration={200}>
 {#if booted}
-  {#if pathname === '/setup' && needsSetup}
+  {#if pathname === '/setup' && session.needsSetup}
     <Setup />
   {:else if !session.user}
     <Login />

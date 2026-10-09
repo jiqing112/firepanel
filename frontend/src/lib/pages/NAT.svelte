@@ -24,25 +24,15 @@
 
   async function load() {
     loading = true;
-    // @ts-ignore 临时诊断
-    (window.__nat = window.__nat || []).push('start');
     try {
       const r = await backend.natRules();
-      // @ts-ignore 临时诊断
-      (window.__nat = window.__nat || []).push('rules-ok');
       items = r.items;
       ipForward = r.ip_forward;
       ifaces = (await backend.interfaces()).items;
-      // @ts-ignore 临时诊断
-      (window.__nat = window.__nat || []).push('ifaces-ok');
     } catch (e) {
-      // @ts-ignore 临时诊断
-      (window.__nat = window.__nat || []).push('ERR:' + String(e).slice(0, 60));
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
-      // @ts-ignore 临时诊断
-      (window.__nat = window.__nat || []).push('end');
     }
   }
   onMount(() => {
@@ -184,7 +174,7 @@
                 <p class="mt-0.5 truncate text-[11.5px] text-muted-foreground">{r.remark}</p>
               {/if}
             </div>
-            <Badge variant="outline" class="{r.type === 'MASQ' ? 'bg-primary/10 text-primary ring-primary/20' : 'bg-info/10 text-info ring-info/20'}">
+            <Badge variant="outline" class={r.type === 'MASQ' ? 'bg-primary/10 text-primary ring-primary/20' : 'bg-info/10 text-info ring-info/20'}>
               {r.type === 'MASQ' ? '动态伪装' : '固定转换'}
             </Badge>
             <div class="flex items-center gap-2 text-[12.5px]">

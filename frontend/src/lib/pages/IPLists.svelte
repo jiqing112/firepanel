@@ -105,7 +105,6 @@
 
   async function exportList(format: 'txt' | 'csv' | 'json') {
     try {
-      const { api } = await import('$lib/api');
       const res = await fetch(`/api/v1/ip-lists/export?type=${tab}&format=${format}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('firepanel-token') ?? ''}` },
       });
