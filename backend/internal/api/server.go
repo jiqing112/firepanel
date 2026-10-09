@@ -163,10 +163,27 @@ func (s *Server) registerRoutes() {
 }
 
 // Run 启动 HTTP 服务。
-func (s *Server) Run(listen string) error {
+// Run 启动面板 HTTP 服务；httpsAddr 非空时启用整站 HTTP→HTTPS 跳转（保留 /.well-known/acme-challenge 明文路径）。
+func (s *Server) Run(listen string, httpsAddr ...string) error {
+	var handler http.Handler = s.Engine
+	if len(httpsAddr) > 0 && httpsAddr[0] != "" {
+		target := httpsAddr[0]
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// ACME HTTP-01 挑战必须走明文 80/HTTP 端口，不跳转
+			if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+				s.Engine.ServeHTTP(w, r)
+				return
+			}
+			host := r.Host
+			if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host, "]") {
+				host = host[:i] // 去掉原端口，追加 HTTPS 端口
+			}
+			http.Redirect(w, r, "https://"+host+target+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+		})
+	}
 	srv := &http.Server{
 		Addr:              listen,
-		Handler:           s.Engine,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return srv.ListenAndServe()

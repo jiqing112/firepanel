@@ -90,7 +90,11 @@ func main() {
 
 	go func() {
 		log.Info("HTTP 服务就绪", "addr", cfg.Server.Listen)
-		if err := srv.Run(cfg.Server.Listen); err != nil {
+		redirect := ""
+		if cfg.Server.PanelHTTPS != "" || (cfg.Server.PanelTLSCert != "" && cfg.Server.PanelTLSKey != "") {
+			redirect = cfg.Server.PanelHTTPSPort
+		}
+		if err := srv.Run(cfg.Server.Listen, redirect); err != nil {
 			log.Error("HTTP 服务退出", "err", err)
 			stop()
 		}

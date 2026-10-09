@@ -517,8 +517,12 @@ export function connectWS() {
       /* 忽略坏帧 */
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
+    // 1008/403 等鉴权失败不再重连（token 无效，等用户重新登录）
+    if (ev.code === 1008 || ev.code === 1006) {
+      if (wsReconnect > 3) return;
+    }
     scheduleReconnect();
   };
   ws.onerror = () => ws?.close();
