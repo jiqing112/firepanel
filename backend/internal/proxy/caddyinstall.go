@@ -86,5 +86,10 @@ func EnsureCaddyService(ctx context.Context, runner Runner) error {
 	}
 	_, _ = runner.Run(ctx, "systemctl", "enable", "--now", "caddy")
 	_, _ = runner.Run(ctx, "systemctl", "restart", "caddy")
+	// 之前不检查结果：服务起不来时 UI 仍显示成功，随后才由 reload 报错，
+	// 用户看到的错误与真实原因（服务未启动）对不上。
+	if out, err := runner.Run(ctx, "systemctl", "is-active", "caddy"); err != nil {
+		return fmt.Errorf("Caddy 服务未运行（%s），请检查 journalctl -u caddy", strings.TrimSpace(out))
+	}
 	return nil
 }

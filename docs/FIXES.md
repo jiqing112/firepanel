@@ -44,6 +44,8 @@
 | 24 | 30+ Go 文件未 gofmt；CI 无格式/vet/类型检查 | 全量 gofmt；CI 增加 `gofmt -l`、`go vet`、`svelte-check`、干净检出构建 |
 | 25 | `.gocache`（265MB）、`.workbuddy-ai`、`.zwork` 未忽略；无 `.gitattributes` | 补 ignore（含 Docker 构建上下文）；脚本/源码固定 LF |
 | 26 | `build.sh` 只产出 amd64，版本号恒为 dev | 支持 `arm64`，注入 `-X main.version`（可用 `FIREPANEL_VERSION` 覆盖） |
+| 27 | Basic Auth 凭据写在二进制同目录 | Docker 下写在 `/usr/local/bin`（镜像层，容器重建即丢失，整站防护悄悄失效）；改为**数据目录** `basicauth.yaml`，旧版程序目录文件仍兼容读取 |
+| 28 | `EnsureCaddyService` 不检查服务是否真的起来 | 切换 caddy 引擎时 UI 显示成功、实际未运行；改为 `is-active` 校验并给出 journalctl 提示 |
 
 ## 新增测试
 

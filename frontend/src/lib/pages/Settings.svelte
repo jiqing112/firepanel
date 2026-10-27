@@ -361,7 +361,7 @@
         {baSaving ? '应用中…' : '保存'}
       </Button>
       <span class="text-[11px] text-muted-foreground">
-        立即生效 · 扫描器只见 401 · 凭据在
+        立即生效 · 扫描器只见 401 · 凭据在数据目录
         <code class="rounded bg-foreground/[0.06] px-1 font-mono">basicauth.yaml</code>
         （手改约 2 秒自动生效）
       </span>

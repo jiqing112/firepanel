@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"firepanel/internal/app"
 	"firepanel/internal/fw"
 	"firepanel/internal/monitor"
 	"firepanel/internal/store"
@@ -217,7 +216,7 @@ func (s *Server) GetBasicAuth(c *gin.Context) {
 		out["enabled"] = true
 		out["username"] = st.User
 		out["password_set"] = true
-	} else if u, _, ok := app.LoadBasicAuthFile(); ok {
+	} else if u, _, ok := s.App.LoadBasicAuthFile(); ok {
 		// 文件里保存过凭据但当前停用：回显用户名与"已有密码"
 		out["username"] = u
 		out["password_set"] = true

@@ -62,7 +62,7 @@ POST /system/danger/cancel    {"token": "..."}               # 撤销：未生�
 | POST | /system/restore | 从 JSON 备份恢复（全量替换上述结构化配置，可能触发 danger）。先全量校验再单事务写入；成功后热重载反代/定时任务/告警/防爆破 |
 | GET  | /audit?limit=200 | 操作审计（新→旧） |
 | GET  | /settings/basicauth | 整站 Basic Auth 状态（密码不回传；`source`: file/config） |
-| POST | /settings/basicauth | `{enabled, username, password?}`（password 留空保持原密码；立即生效）。凭据持久化在**程序目录 basicauth.yaml**（0600），手动编辑该文件后重启面板生效 |
+| POST | /settings/basicauth | `{enabled, username, password?}`（password 留空保持原密码；立即生效）。凭据持久化在**数据目录 basicauth.yaml**（0600；旧版程序目录文件仍兼容读取），手动编辑后约 2 秒热生效 |
 
 ## 端口转发 /forwards
 
