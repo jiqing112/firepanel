@@ -168,10 +168,21 @@ func (e *Engine) record(j store.JailConfig, ip string) {
 	delete(e.counters[j.ID], ip)
 	e.mu.Unlock()
 
+	canon := fw.CanonicalIPOrCIDR(ip)
+	if canon == "" {
+		return
+	}
+	// 已在黑名单（手工永久封禁/上一轮 jail 封禁）：不要 upsert，
+	// 否则会把永久封禁改成临时（expires_at 被覆盖），或产生等价重复条目。
+	if exists, err := e.st.IPListExists("black", canon); err == nil && exists {
+		e.log.Info("jail 命中但该 IP 已在黑名单中，跳过", "jail", j.Name, "ip", ip)
+		return
+	}
+
 	until := now.Add(time.Duration(j.BanTime) * time.Second)
 	entry := &store.IPListEntry{
 		ListType:  "black",
-		IPOrCIDR:  ip + "/32",
+		IPOrCIDR:  canon,
 		GroupTag:  "jail:" + j.Name,
 		Source:    "jail:" + j.Name,
 		ExpiresAt: &until,

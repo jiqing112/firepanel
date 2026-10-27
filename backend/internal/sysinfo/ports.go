@@ -1,6 +1,7 @@
 package sysinfo
 
 import (
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -67,10 +68,15 @@ func ParseSSOutput(out, proto string) []ListenPort {
 }
 
 // ExternallyExposed 监听地址是否对外可达（非仅本机回环）。
+// 用 net.ParseIP 判断整个 127.0.0.0/8（127.0.0.53、127.0.0.1 等）与 ::1，
+// 之前只匹配字面量 127.0.0.1，systemd-resolved 的 127.0.0.53 会被误标成「对外」。
 func externallyExposed(addr string) bool {
-	switch addr {
-	case "127.0.0.1", "::1", "[::1]":
-		return false
+	addr = strings.Trim(addr, "[]")
+	if i := strings.LastIndex(addr, "%"); i > 0 { // 去掉 IPv6 zone（fe80::1%eth0）
+		addr = addr[:i]
+	}
+	if ip := net.ParseIP(addr); ip != nil {
+		return !ip.IsLoopback()
 	}
 	return true
 }

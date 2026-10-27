@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"firepanel/internal/store"
 )
@@ -68,5 +69,39 @@ func TestValidateBundleAcceptsValidBundle(t *testing.T) {
 	}
 	if err := validateBundle(b); err != nil {
 		t.Fatalf("合法备份不应被拒绝: %v", err)
+	}
+}
+
+func TestParseTimeLooseConvertsToLocal(t *testing.T) {
+	got, err := parseTimeLoose("2026-12-31T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("时区换算改变了时刻: got=%v want=%v", got, want)
+	}
+	if got.Location() != time.Local {
+		t.Fatalf("应统一为本地时区，得到 %v", got.Location())
+	}
+	got2, err := parseTimeLoose("2026-12-31 00:00")
+	if err != nil || got2.Hour() != 0 || got2.Location() != time.Local {
+		t.Fatalf("本地时间解析错误: %v %v", got2, err)
+	}
+}
+
+func TestValidateNATIPv4Only(t *testing.T) {
+	masq := &store.NATRule{Name: "m", Type: "MASQ", SrcCIDR: "192.168.1.0/24", OutIface: "eth0", ToAddr: "garbage"}
+	if err := validateNAT(masq); err != nil {
+		t.Fatalf("MASQ 应通过: %v", err)
+	}
+	if masq.ToAddr != "" {
+		t.Fatalf("MASQ 的 to_addr 应被清空，得到 %q", masq.ToAddr)
+	}
+	if err := validateNAT(&store.NATRule{Name: "v6", Type: "MASQ", SrcCIDR: "2001:db8::/32", OutIface: "eth0"}); err == nil {
+		t.Fatal("IPv6 来源网段应被拒绝")
+	}
+	if err := validateNAT(&store.NATRule{Name: "s", Type: "SNAT", SrcCIDR: "10.0.0.0/8", OutIface: "eth0", ToAddr: "2001:db8::1"}); err == nil {
+		t.Fatal("IPv6 SNAT 地址应被拒绝")
 	}
 }

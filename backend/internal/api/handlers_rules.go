@@ -21,9 +21,12 @@ func pathID(c *gin.Context) int64 {
 func fmtUser(id int64) string { return "user:" + strconv.FormatInt(id, 10) }
 
 // parseTimeLoose 兼容 RFC3339 与 "2006-01-02 15:04" 两种格式。
+// 统一转换为本地时区：存储层用 t.Format 写入、读出按 time.Local 解析，
+// 若保留 RFC3339 自带的偏移（如 +00:00）会提前/延后到期。
 func parseTimeLoose(v string) (*time.Time, error) {
 	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
 		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
+			t = t.In(time.Local)
 			return &t, nil
 		}
 	}
@@ -270,8 +273,10 @@ func (s *Server) CreateIPList(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "list_type 必须为 black 或 white"})
 		return
 	}
-	if err := fw.ValidateIPOrCIDR(req.IPOrCIDR); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	// 统一规范化后入库：1.2.3.4 / " 1.2.3.4 " / 1.2.3.4/32 必须是同一条目
+	canon := fw.CanonicalIPOrCIDR(req.IPOrCIDR)
+	if canon == "" {
+		c.JSON(400, gin.H{"error": "必须是合法的 IP 或 CIDR 网段"})
 		return
 	}
 	if s.App.HasPendingDanger() {
@@ -279,7 +284,7 @@ func (s *Server) CreateIPList(c *gin.Context) {
 		return
 	}
 	e := &store.IPListEntry{
-		ListType: req.ListType, IPOrCIDR: req.IPOrCIDR, GroupTag: req.GroupTag,
+		ListType: req.ListType, IPOrCIDR: canon, GroupTag: req.GroupTag,
 		Source: "manual", Country: req.Country, Remark: req.Remark,
 	}
 	if req.ExpiresAt != "" {
@@ -408,11 +413,12 @@ func (s *Server) ImportIPLists(c *gin.Context) {
 			if line == "" {
 				continue
 			}
-			if fw.ValidateIPOrCIDR(line) != nil {
+			canon := fw.CanonicalIPOrCIDR(line)
+			if canon == "" {
 				skipped++
 				continue
 			}
-			e := &store.IPListEntry{ListType: req.ListType, IPOrCIDR: line, Source: "import"}
+			e := &store.IPListEntry{ListType: req.ListType, IPOrCIDR: canon, Source: "import"}
 			if err := s.App.Store.CreateIPList(e); err != nil {
 				skipped++
 				continue

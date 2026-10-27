@@ -246,8 +246,15 @@ func (s *Store) UpdateTask(t *ScheduledTask) error {
 }
 
 func (s *Store) SetTaskRun(id int64, last, next time.Time) error {
-	_, err := s.db.Exec(`UPDATE scheduled_tasks SET last_run=?, next_run=? WHERE id=?`,
-		last.Format("2006-01-02 15:04:05"), next.Format("2006-01-02 15:04:05"), id)
+	// 从未运行过时 last 是零值：必须存 NULL，否则界面显示 0001-01-01
+	var lastVal, nextVal any
+	if !last.IsZero() {
+		lastVal = last.Format("2006-01-02 15:04:05")
+	}
+	if !next.IsZero() {
+		nextVal = next.Format("2006-01-02 15:04:05")
+	}
+	_, err := s.db.Exec(`UPDATE scheduled_tasks SET last_run=?, next_run=? WHERE id=?`, lastVal, nextVal, id)
 	return err
 }
 
@@ -295,13 +302,16 @@ func (s *Store) ListAlerts() ([]AlertConfig, error) {
 }
 
 func (s *Store) UpsertAlert(a *AlertConfig) error {
-	res, err := s.db.Exec(`INSERT INTO alert_configs(channel,config_json,events_json,enabled) VALUES(?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO alert_configs(channel,config_json,events_json,enabled) VALUES(?,?,?,?)
 		ON CONFLICT(channel) DO UPDATE SET config_json=excluded.config_json, events_json=excluded.events_json, enabled=excluded.enabled`,
 		a.Channel, a.ConfigJSON, a.EventsJSON, boolInt(a.Enabled))
 	if err != nil {
 		return err
 	}
-	a.ID, _ = res.LastInsertId()
+	// 同 CreateIPList：UPSERT 冲突时 LastInsertId 不可靠，按唯一键回查
+	if err := s.db.QueryRow(`SELECT id FROM alert_configs WHERE channel=?`, a.Channel).Scan(&a.ID); err != nil {
+		return err
+	}
 	return nil
 }
 

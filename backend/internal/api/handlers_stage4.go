@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,18 +153,28 @@ func validateNAT(r *store.NATRule) error {
 	if r.Type != "SNAT" && r.Type != "MASQ" {
 		return errStr("类型必须为 SNAT 或 MASQ")
 	}
-	if fw.NormalizeCIDRCheck(r.SrcCIDR) == "" {
+	cidr := fw.NormalizeCIDRCheck(r.SrcCIDR)
+	if cidr == "" {
 		return errStr("来源网段必须是合法 CIDR")
 	}
+	// NAT 规则固定使用 IPv4（translate 的 Family 硬编码 ipv4）：这里拒绝 IPv6，
+	// 否则会生成 ip saddr <v6> 这种非法规则，导致整批 Apply 失败。
+	if ip, _, err := net.ParseCIDR(cidr); err != nil || ip.To4() == nil {
+		return errStr("NAT 目前只支持 IPv4 网段（如 192.168.1.0/24）")
+	}
+	r.SrcCIDR = cidr
 	if strings.TrimSpace(r.OutIface) == "" || !ifaceNameSafe(strings.TrimSpace(r.OutIface)) {
 		return errStr("出口网卡名不合法（仅字母数字 . _ -）")
 	}
 	if r.Type == "SNAT" {
 		ip := fw.NormalizeIPCheck(r.ToAddr)
-		if ip == "" {
-			return errStr("SNAT 需要合法的出口 IP")
+		if ip == "" || net.ParseIP(ip).To4() == nil {
+			return errStr("SNAT 需要合法的 IPv4 出口地址")
 		}
 		r.ToAddr = ip // 存规范化后的 IP，杜绝未校验字符串流入内核脚本
+	} else {
+		// MASQ 不使用目标地址：清空，避免脏字符串入库并触发注入防御
+		r.ToAddr = ""
 	}
 	return nil
 }
@@ -336,7 +347,10 @@ func (s *Server) CreateTask(c *gin.Context) {
 		respErr(c, 500, err)
 		return
 	}
-	_ = s.App.Sched.Reload()
+	if err := s.App.Sched.Reload(); err != nil {
+		respErr(c, 500, err)
+		return
+	}
 	s.audit(c, "create", "task:"+t.Name, nil, t)
 	c.JSON(200, gin.H{"item": t})
 }
@@ -365,7 +379,10 @@ func (s *Server) UpdateTask(c *gin.Context) {
 		respErr(c, 500, err)
 		return
 	}
-	_ = s.App.Sched.Reload()
+	if err := s.App.Sched.Reload(); err != nil {
+		respErr(c, 500, err)
+		return
+	}
 	s.audit(c, "update", "task:"+t.Name, nil, t)
 	c.JSON(200, gin.H{"item": t})
 }
@@ -376,7 +393,10 @@ func (s *Server) DeleteTask(c *gin.Context) {
 		respErr(c, 500, err)
 		return
 	}
-	_ = s.App.Sched.Reload()
+	if err := s.App.Sched.Reload(); err != nil {
+		respErr(c, 500, err)
+		return
+	}
 	s.audit(c, "delete", "task:"+strconv.FormatInt(id, 10), nil, nil)
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -414,10 +434,22 @@ func (s *Server) UpsertAlert(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "渠道不合法"})
 		return
 	}
-	cfgJSON, _ := json.Marshal(q.Config)
-	eventsJSON, _ := json.Marshal(q.Events)
-	if len(q.Events) == 0 {
+	cfgJSON, err := json.Marshal(q.Config)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "告警配置格式错误"})
+		return
+	}
+	// 与 /alerts/test 共用校验：避免「保存成功但永远发不出去」
+	if err := notify.ValidateConfig(q.Channel, cfgJSON); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	var eventsJSON []byte
+	if q.Events == nil {
+		// 字段缺省 → 默认订阅；显式传 [] 表示用户清空全部订阅
 		eventsJSON = []byte(`["apply_fail","drift","danger_pending","health_down","rollback","proxy_cert_error"]`)
+	} else {
+		eventsJSON, _ = json.Marshal(q.Events)
 	}
 	a := &store.AlertConfig{
 		Channel: q.Channel, ConfigJSON: string(cfgJSON),
@@ -451,6 +483,11 @@ func (s *Server) TestAlert(c *gin.Context) {
 	}
 	n := notify.New()
 	cfgJSON, _ := json.Marshal(q.Config)
+	// 与保存共用同一套校验，避免「测试 400 / 保存 200」的不一致
+	if err := notify.ValidateConfig(q.Channel, cfgJSON); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 	var errs []error
 	switch q.Channel {
 	case "telegram":

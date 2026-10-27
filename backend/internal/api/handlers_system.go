@@ -290,9 +290,10 @@ func (s *Server) GetPanelPorts(c *gin.Context) {
 		return ""
 	}
 	c.JSON(200, gin.H{
-		"listen":        s.App.Cfg.Server.Listen,
-		"https_port":    strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":"),
-		"https_enabled": s.App.Cfg.Server.PanelHTTPS != "",
+		"listen":     s.App.Cfg.Server.Listen,
+		"https_port": strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":"),
+		"https_enabled": s.App.Cfg.Server.PanelHTTPS != "" ||
+			(s.App.Cfg.Server.PanelTLSCert != "" && s.App.Cfg.Server.PanelTLSKey != ""),
 		"source_listen": src("panel_listen"),
 		"source_https":  src("panel_https_port"),
 	})
@@ -329,11 +330,24 @@ func (s *Server) SetPanelPorts(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "HTTPS 端口须为 1-65535"})
 		return
 	}
-	// 试绑校验：新端口与当前监听相同则跳过（自身占用属正常）
+	// 只对「该监听器自己的当前端口」跳过试绑；HTTPS 未启用时 8443 不享有豁免，
+	// 否则把 HTTP 端口改成 8443 会跳过占用检测，重启后端口冲突 → 面板起不来。
+	curHTTP := strings.TrimPrefix(s.App.Cfg.Server.Listen, ":")
+	curHTTPS := strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":")
+	httpsEnabled := s.App.Cfg.Server.PanelHTTPS != "" ||
+		(s.App.Cfg.Server.PanelTLSCert != "" && s.App.Cfg.Server.PanelTLSKey != "")
+	newHTTP, newHTTPS := curHTTP, curHTTPS
+	if req.Listen != "" {
+		newHTTP = req.Listen
+	}
+	if req.HTTPSPort != "" {
+		newHTTPS = req.HTTPSPort
+	}
+	if httpsEnabled && newHTTP == newHTTPS {
+		c.JSON(400, gin.H{"error": "HTTP 与 HTTPS 不能使用同一端口"})
+		return
+	}
 	tryBind := func(port string) error {
-		if port == strings.TrimPrefix(s.App.Cfg.Server.Listen, ":") || port == strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":") {
-			return nil
-		}
 		ln, err := net.Listen("tcp4", ":"+port)
 		if err != nil {
 			return fmt.Errorf("端口 %s 已被占用", port)
@@ -341,13 +355,14 @@ func (s *Server) SetPanelPorts(c *gin.Context) {
 		_ = ln.Close()
 		return nil
 	}
-	if req.Listen != "" {
+	if req.Listen != "" && req.Listen != curHTTP {
 		if err := tryBind(req.Listen); err != nil {
 			c.JSON(400, gin.H{"error": "HTTP " + err.Error()})
 			return
 		}
 	}
-	if req.HTTPSPort != "" {
+	// HTTPS 端口只有实际启用时才会监听；未启用时只做格式校验，不试绑
+	if req.HTTPSPort != "" && req.HTTPSPort != curHTTPS && httpsEnabled {
 		if err := tryBind(req.HTTPSPort); err != nil {
 			c.JSON(400, gin.H{"error": "HTTPS " + err.Error()})
 			return
@@ -386,12 +401,16 @@ func (s *Server) RestartPanel(c *gin.Context) {
 func (s *Server) DashboardSummary(c *gin.Context) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	samples, _ := s.App.Store.ListStatsSince(midnight.Unix())
+	samples, err := s.App.Store.ListStatsSince(midnight.Unix())
+	if err != nil {
+		respErr(c, 500, err)
+		return
+	}
 
 	var conn int64
 	var rxPeak, txPeak int64
 	var trafficTotal float64
-	for _, sm := range samples {
+	for i, sm := range samples {
 		if sm.ConnCount > conn {
 			conn = sm.ConnCount
 		}
@@ -401,16 +420,32 @@ func (s *Server) DashboardSummary(c *gin.Context) {
 		if sm.TxBps > txPeak {
 			txPeak = sm.TxBps
 		}
-		trafficTotal += float64(sm.RxBps+sm.TxBps) * float64(s.App.Cfg.Sync.StatsInterval.Seconds())
+		// 采样是「每分钟最多一条」，不是每个 StatsInterval 一条：按相邻样本的
+		// 实际时间差折算流量。用 StatsInterval(5s) 乘会把今日流量低估到约 1/12。
+		dt := 60.0
+		if i > 0 {
+			if d := sm.TS - samples[i-1].TS; d > 0 && d <= 3600 {
+				dt = float64(d)
+			}
+		}
+		trafficTotal += float64(sm.RxBps+sm.TxBps) * dt
 	}
 	rxNow, txNow := s.App.Net.Tick()
 	if conn == 0 {
 		conn = sysinfo.ConnCount()
 	}
 
-	// 规则命中排行
-	counters, _ := s.App.Backend.Counters(c.Request.Context())
-	fwds, _ := s.App.Store.ListForwards()
+	// 规则命中排行（读取失败记录日志，不静默当作 0，也不阻塞其余仪表盘数据）
+	counters, err := s.App.Backend.Counters(c.Request.Context())
+	if err != nil {
+		s.Log.Warn("读取规则命中计数失败", "err", err)
+		counters = map[string]fw.Counter{}
+	}
+	fwds, err := s.App.Store.ListForwards()
+	if err != nil {
+		respErr(c, 500, err)
+		return
+	}
 	type hitRow struct {
 		ID   int64  `json:"rule_id"`
 		Name string `json:"name"`

@@ -118,7 +118,12 @@ func (s *Server) UpdatePortRecord(c *gin.Context) {
 func (s *Server) DeletePortRecord(c *gin.Context) {
 	id := pathID(c)
 	if err := s.App.Store.DeletePortRecord(id); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+		} else {
+			// 数据库错误不能伪装成 404：用户会误以为已经删掉了
+			respErr(c, 500, err)
+		}
 		return
 	}
 	s.audit(c, "delete", "port_record:"+strconv.FormatInt(id, 10), nil, nil)

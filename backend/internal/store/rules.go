@@ -166,14 +166,20 @@ func (s *Store) ListIPLists(listType string) ([]IPListEntry, error) {
 }
 
 func (s *Store) CreateIPList(e *IPListEntry) error {
-	res, err := s.db.Exec(`INSERT INTO ip_lists(list_type,ip_or_cidr,set_name,group_tag,source,country,expires_at,remark)
+	_, err := s.db.Exec(`INSERT INTO ip_lists(list_type,ip_or_cidr,set_name,group_tag,source,country,expires_at,remark)
 		VALUES(?,?,?,?,?,?,?,?)
-		ON CONFLICT(list_type,ip_or_cidr) DO UPDATE SET group_tag=excluded.group_tag, remark=excluded.remark, expires_at=excluded.expires_at`,
+		ON CONFLICT(list_type,ip_or_cidr) DO UPDATE SET set_name=excluded.set_name, group_tag=excluded.group_tag,
+			source=excluded.source, country=excluded.country, expires_at=excluded.expires_at, remark=excluded.remark`,
 		e.ListType, e.IPOrCIDR, e.SetName, e.GroupTag, e.Source, e.Country, timePtr(e.ExpiresAt), e.Remark)
 	if err != nil {
 		return err
 	}
-	e.ID, _ = res.LastInsertId()
+	// UPSERT 冲突时走的是 UPDATE，LastInsertId 不可靠（可能是上一条插入的 rowid），
+	// 必须按唯一键回查；否则 jail 复封已有 IP 时接口会返回 id=0。
+	if err := s.db.QueryRow(`SELECT id FROM ip_lists WHERE list_type=? AND ip_or_cidr=?`,
+		e.ListType, e.IPOrCIDR).Scan(&e.ID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -198,6 +204,15 @@ func (s *Store) DeleteIPList(id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// IPListExists 判断某类型下是否已有该（规范化）IP/CIDR。
+// jail 封禁前用它避免把已有手工黑名单改成临时封禁、或重复插入等价条目。
+func (s *Store) IPListExists(listType, ipOrCIDR string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM ip_lists WHERE list_type=? AND ip_or_cidr=?`,
+		listType, ipOrCIDR).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) DeleteIPListsExpired(now time.Time) (int64, error) {

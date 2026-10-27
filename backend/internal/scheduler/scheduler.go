@@ -49,7 +49,15 @@ func (s *Scheduler) Start() error {
 }
 
 // Reload 全量重载任务（增删改后调用）。
+// 先成功读到新任务列表再替换现有条目：读库失败时保留旧任务继续调度，
+// 而不是先 Remove 掉所有任务、失败后让全部定时任务静默停摆。
 func (s *Scheduler) Reload() error {
+	tasks, err := s.store.ListTasks()
+	if err != nil {
+		s.log.Error("定时任务读取失败，保留现有调度", "err", err)
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 清空现有条目
@@ -58,10 +66,6 @@ func (s *Scheduler) Reload() error {
 	}
 	s.ids = map[int64]cron.EntryID{}
 
-	tasks, err := s.store.ListTasks()
-	if err != nil {
-		return err
-	}
 	for _, t := range tasks {
 		if !t.Enabled {
 			continue

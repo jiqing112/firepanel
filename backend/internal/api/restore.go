@@ -59,6 +59,8 @@ func validateBundle(b *store.Bundle) error {
 		if err := fw.ValidateIPOrCIDR(e.IPOrCIDR); err != nil {
 			return fmt.Errorf("名单 #%d（%s）: %w", i+1, e.IPOrCIDR, err)
 		}
+		// 备份里可能是旧版未规范化的写法：恢复时统一成 1.2.3.4 / 10.0.0.0/8
+		e.IPOrCIDR = fw.CanonicalIPOrCIDR(e.IPOrCIDR)
 	}
 	for i := range b.RateLimits {
 		if err := validateRateLimit(&b.RateLimits[i]); err != nil {

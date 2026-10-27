@@ -73,7 +73,8 @@ func TestRecordBanFlow(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("黑名单应有 1 条: n=%d err=%v", len(entries), err)
 	}
-	if entries[0].IPOrCIDR != "10.1.2.3/32" || entries[0].ExpiresAt == nil {
+	// 入库统一为规范形式（单 IP 不带 /32）；内核层会自行补掩码
+	if entries[0].IPOrCIDR != "10.1.2.3" || entries[0].ExpiresAt == nil {
 		t.Fatalf("封禁条目错误: %+v", entries[0])
 	}
 }

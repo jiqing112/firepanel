@@ -160,24 +160,22 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) (*App, error) {
 			Target: "iplist:black:" + ip, Detail: j.Name, IP: ip,
 		})
 	}
+	// 调度动作与用户请求共用 Mutate 的串行化与「失败回滚」编排：
+	// 否则 cron 与用户变更交错时可能出现 DB 已改、内核未改（或旧 Desired 覆盖新规则）。
 	a.Sched = scheduler.New(st, log, scheduler.Actions{
 		SetForward: func(id int64, enabled bool) error {
-			if err := st.SetForwardEnabled(id, enabled); err != nil {
-				return err
-			}
-			_, err := a.Sync("")
+			_, err := a.Mutate("", func() error { return st.SetForwardEnabled(id, enabled) })
 			return err
 		},
 		ExpireIPList: func() error {
-			n, err := st.DeleteIPListsExpired(time.Now())
-			if err != nil || n == 0 {
-				return err
-			}
-			_, _ = a.Sync("")
-			return nil
+			_, err := a.Mutate("", func() error {
+				_, e := st.DeleteIPListsExpired(time.Now())
+				return e
+			})
+			return err
 		},
 		Sync: func() error {
-			_, err := a.Sync("")
+			_, err := a.Mutate("", func() error { return nil })
 			return err
 		},
 	})

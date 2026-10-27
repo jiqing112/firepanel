@@ -327,6 +327,35 @@ func ValidateIPOrCIDR(v string) error {
 	return nil
 }
 
+// CanonicalIPOrCIDR 返回用于入库的规范形式：单 IP 不带掩码（1.2.3.4），
+// 网段取网络地址（10.0.0.0/8）。非法输入返回空串。
+// 入库必须用它：jail 写 "1.2.3.4/32"、手工写 "1.2.3.4"、带空格的写法
+// 在唯一索引里是三条不同记录，但内核会归一成同一条 DROP，导致重复规则、
+// 解封只删一条仍然被封。非法规整。
+func CanonicalIPOrCIDR(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if strings.Contains(v, "/") {
+		_, cidr, err := net.ParseCIDR(v)
+		if err != nil {
+			return ""
+		}
+		// 全掩码（/32、/128）等价于单个主机地址，统一成不带掩码的形式，
+		// 否则 "1.2.3.4" 与 "1.2.3.4/32" 在唯一索引里仍是两条。
+		if ones, bits := cidr.Mask.Size(); ones == bits {
+			return cidr.IP.String()
+		}
+		return cidr.String()
+	}
+	ip := net.ParseIP(v)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
 type errStr string
 
 func (e errStr) Error() string { return string(e) }

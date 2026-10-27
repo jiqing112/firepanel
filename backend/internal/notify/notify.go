@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +76,56 @@ func (n *Notifier) Load(tg *TelegramConfig, wh *WebhookConfig, sm *SMTPConfig) {
 	n.tg, n.webhook, n.smtp = tg, wh, sm
 }
 
+// ValidateConfig 按渠道校验配置（保存与测试共用），避免「保存成功但永远发不出去」。
+func ValidateConfig(channel string, raw []byte) error {
+	switch channel {
+	case "telegram":
+		var c TelegramConfig
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return fmt.Errorf("telegram 配置格式错误（bot_token/chat_id 需为字符串）")
+		}
+		if strings.TrimSpace(c.BotToken) == "" || strings.TrimSpace(c.ChatID) == "" {
+			return fmt.Errorf("telegram 需要 bot_token 与 chat_id")
+		}
+	case "webhook":
+		var c WebhookConfig
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return fmt.Errorf("webhook 配置格式错误")
+		}
+		u, err := url.Parse(strings.TrimSpace(c.URL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("webhook 需要合法的 http(s) URL")
+		}
+		if c.Method != "" && !strings.EqualFold(c.Method, "POST") && !strings.EqualFold(c.Method, "GET") {
+			return fmt.Errorf("webhook method 仅支持 POST 或 GET")
+		}
+	case "smtp":
+		var c SMTPConfig
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return fmt.Errorf("smtp 配置格式错误")
+		}
+		if strings.TrimSpace(c.Host) == "" || strings.TrimSpace(c.To) == "" {
+			return fmt.Errorf("smtp 需要 host 与收件人 to")
+		}
+		if c.Port < 0 || c.Port > 65535 {
+			return fmt.Errorf("smtp 端口不合法")
+		}
+	default:
+		return fmt.Errorf("不支持的告警渠道: %s", channel)
+	}
+	return nil
+}
+
+// redactURLError 去掉 *url.Error 里的完整 URL（Telegram bot token、webhook 密钥
+// 常在 URL 路径/查询串里，直接写日志会泄露凭据）。
+func redactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
 // Send 向全部已装载渠道发送事件（单渠道失败不影响其他）。
 func (n *Notifier) Send(ev Event) []error {
 	n.mu.RLock()
@@ -116,7 +168,8 @@ func (n *Notifier) sendTelegram(cfg *TelegramConfig, ev Event) error {
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
-		return err
+		// 不返回 *url.Error：它的 Error() 含完整 URL（bot token 就在路径里）
+		return fmt.Errorf("telegram 请求失败: %w", redactURLError(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -151,7 +204,8 @@ func (n *Notifier) sendWebhook(cfg *WebhookConfig, ev Event) error {
 	}
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return err
+		// webhook URL 常带 token/secret，错误信息里不能带完整 URL
+		return fmt.Errorf("webhook 请求失败: %w", redactURLError(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
