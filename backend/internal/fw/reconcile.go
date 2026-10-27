@@ -16,6 +16,7 @@ import (
 // Event 事件回调载荷（WS events topic / 审计联动）。
 type Event struct {
 	Type      string    `json:"type"` // apply_ok|apply_fail|drift|danger_pending|danger_applied|rollback
+	Token     string    `json:"token,omitempty"`
 	Message   string    `json:"message"`
 	Detail    string    `json:"detail,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
@@ -32,13 +33,14 @@ func defaultResolve(domain string) ([]net.IP, error) {
 type Reconciler struct {
 	backend FirewallBackend
 
-	sshPorts     []int
-	dangerDelay  time.Duration
+	sshPorts      []int
+	dangerDelay   time.Duration
 	confirmWindow time.Duration
-	resolve      DNSResolver
+	resolve       DNSResolver
 
 	mu        sync.Mutex
 	lastGood  *DesiredState // 上一份成功应用的期望状态
+	prevGood  *DesiredState // 危险变更生效前的上一份成功状态（超时回滚目标）
 	pending   *DangerOp
 	watchdogs map[string]*time.Timer
 
@@ -111,7 +113,7 @@ type SyncResult struct {
 	ConfirmSec int    `json:"confirm_sec,omitempty"`
 }
 
-// Sync 应用期望状态。dangerCtx 非 nil 时做危险判定（clientIP 可为空）。
+// Sync 应用期望状态。clientIP 非空时做危险判定（空=系统发起，如启动重放）。
 func (rc *Reconciler) Sync(ctx context.Context, st *DesiredState, clientIP string) (*SyncResult, error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -132,20 +134,22 @@ func (rc *Reconciler) Sync(ctx context.Context, st *DesiredState, clientIP strin
 			op := &DangerOp{
 				Token:     randomToken(),
 				Reason:    reason,
-				Staged:    mustJSON(st),
+				Staged:    mustJSON(resolved), // 存已解析状态，避免生效时域名仍未解析
 				CreatedAt: time.Now(),
 				ApplyAt:   time.Now().Add(rc.dangerDelay),
 			}
-			rc.cancelWatchdogLocked(op.Token)
 			rc.pending = op
 			delay := rc.dangerDelay
 			go func(op *DangerOp, delay time.Duration) {
-				t := time.AfterFunc(delay, func() { rc.applyPending(op.Token) })
+				t := time.AfterFunc(delay, func() { _ = rc.applyPending(op.Token) })
 				rc.mu.Lock()
-				rc.watchdogs[op.Token+":delay"] = t
+				// 挂起可能已被确认/撤销，只有仍在队列时才登记定时器
+				if rc.pending != nil && rc.pending.Token == op.Token {
+					rc.watchdogs[op.Token+":delay"] = t
+				}
 				rc.mu.Unlock()
 			}(op, delay)
-			rc.emit(Event{Type: "danger_pending", Message: "检测到高危规则变更，已进入延时生效队列", Detail: reason})
+			rc.emit(Event{Type: "danger_pending", Token: op.Token, Message: "检测到高危规则变更，已进入延时生效队列", Detail: reason})
 			return &SyncResult{
 				Danger: true, Token: op.Token, Reason: reason,
 				DelaySec: int(rc.dangerDelay.Seconds()), ConfirmSec: int(rc.confirmWindow.Seconds()),
@@ -163,37 +167,48 @@ func (rc *Reconciler) Sync(ctx context.Context, st *DesiredState, clientIP strin
 }
 
 // applyPending 到期执行暂存的危险变更。
-func (rc *Reconciler) applyPending(token string) {
+// 失败时清空挂起状态，避免面板永久卡在「存在待确认的高危变更」。
+func (rc *Reconciler) applyPending(token string) error {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	if rc.pending == nil || rc.pending.Token != token {
-		return
+		return errors.New("确认令牌无效或已过期")
 	}
 	op := rc.pending
+	rc.cancelWatchdogLocked(token + ":delay")
 	var st DesiredState
 	if err := json.Unmarshal(op.Staged, &st); err != nil {
-		rc.emit(Event{Type: "apply_fail", Message: "危险变更反序列化失败", Detail: err.Error()})
-		return
+		rc.clearPendingLocked()
+		rc.emit(Event{Type: "apply_fail", Token: token, Message: "危险变更反序列化失败", Detail: err.Error()})
+		return fmt.Errorf("危险变更反序列化失败: %w", err)
 	}
 	rules := BuildRules(&st)
 	if err := rc.backend.Apply(context.Background(), rules); err != nil {
-		rc.emit(Event{Type: "apply_fail", Message: "危险变更应用失败", Detail: err.Error()})
-		return
+		rc.clearPendingLocked()
+		rc.emit(Event{Type: "apply_fail", Token: token, Message: "危险变更应用失败", Detail: err.Error()})
+		return fmt.Errorf("危险变更应用失败: %w", err)
 	}
+	// 记录生效前的上一份成功状态，作为超时回滚的目标（必须在覆盖 lastGood 之前保存）
+	rc.prevGood = rc.lastGood
 	rc.lastGood = &st
 	op.Applied = true
-	rc.emit(Event{Type: "danger_applied", Message: "高危规则已生效", Detail: op.Reason})
+	rc.emit(Event{Type: "danger_applied", Token: token, Message: "高危规则已生效", Detail: op.Reason})
 
-	// 确认窗口：超时未确认 → 自动回滚
-	confirmWindow := rc.confirmWindow
-	t := time.AfterFunc(confirmWindow, func() {
+	// 确认窗口：超时未确认 → 自动回滚到生效前的状态
+	t := time.AfterFunc(rc.confirmWindow, func() {
 		rc.mu.Lock()
-		defer rc.mu.Unlock()
+		var ev Event
 		if rc.pending != nil && rc.pending.Token == token && rc.pending.Applied {
-			rc.rollbackLocked("确认窗口超时未确认")
+			ev = rc.rollbackLocked("确认窗口超时未确认")
+		}
+		rc.mu.Unlock()
+		// 锁外广播：事件回调（app 层恢复数据库快照）会重入 Sync，持锁会死锁
+		if ev.Type != "" {
+			rc.emit(ev)
 		}
 	})
 	rc.watchdogs[token+":confirm"] = t
+	return nil
 }
 
 // PendingExists 是否存在未完成的危险变更。
@@ -206,58 +221,90 @@ func (rc *Reconciler) PendingExists() bool {
 // ConfirmDanger 确认危险变更：阶段1（生效前）立即应用；阶段2（生效后）取消回滚。
 func (rc *Reconciler) ConfirmDanger(token string, stage int) (*SyncResult, error) {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
 	if rc.pending == nil || rc.pending.Token != token {
+		rc.mu.Unlock()
 		return nil, errors.New("确认令牌无效或已过期")
 	}
 	op := rc.pending
+	rc.mu.Unlock()
+
 	switch stage {
 	case 1:
 		if !op.Applied {
-			rc.mu.Unlock()
-			rc.applyPending(token) // 立即应用
-			rc.mu.Lock()
+			if err := rc.applyPending(token); err != nil {
+				return nil, err
+			}
 			return &SyncResult{Applied: true, ConfirmSec: int(rc.confirmWindow.Seconds())}, nil
 		}
 		return &SyncResult{Applied: true}, nil
 	case 2:
-		if !op.Applied {
+		rc.mu.Lock()
+		defer rc.mu.Unlock()
+		if rc.pending == nil || rc.pending.Token != token {
+			return nil, errors.New("确认令牌无效或已过期")
+		}
+		if !rc.pending.Applied {
 			return nil, errors.New("规则尚未生效，无法进行第二阶段确认")
 		}
-		rc.cancelWatchdogLocked(token + ":confirm")
-		rc.pending = nil
-		rc.emit(Event{Type: "apply_ok", Message: "高危规则已确认，取消自动回滚"})
+		rc.clearPendingLocked()
+		rc.emit(Event{Type: "apply_ok", Token: token, Message: "高危规则已确认，取消自动回滚"})
 		return &SyncResult{Applied: true}, nil
 	}
 	return nil, errors.New("未知确认阶段")
 }
 
-// CancelDanger 生效前撤销危险变更。
+// CancelDanger 撤销危险变更：生效前直接丢弃；已生效（确认窗口内）则立即回滚。
 func (rc *Reconciler) CancelDanger(token string) bool {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	if rc.pending != nil && rc.pending.Token == token && !rc.pending.Applied {
-		rc.cancelWatchdogLocked(token + ":delay")
-		rc.pending = nil
-		rc.emit(Event{Type: "apply_ok", Message: "高危规则已撤销"})
-		return true
+	if rc.pending == nil || rc.pending.Token != token {
+		rc.mu.Unlock()
+		return false
 	}
-	return false
+	var ev Event
+	if rc.pending.Applied {
+		ev = rc.rollbackLocked("用户主动回滚")
+	} else {
+		rc.clearPendingLocked()
+		ev = Event{Type: "apply_ok", Token: token, Message: "高危规则已撤销"}
+	}
+	rc.mu.Unlock()
+	// 锁外 emit：rollback 事件会让 app 层恢复数据库并重入 Sync（需要 rc.mu）
+	rc.emit(ev)
+	return true
 }
 
-// rollbackLocked 回滚到上一份成功应用的期望状态（调用方需持锁）。
-func (rc *Reconciler) rollbackLocked(reason string) {
-	if rc.lastGood == nil {
-		rc.emit(Event{Type: "rollback", Message: "无法回滚：没有可用的上一份快照", Detail: reason})
-		return
-	}
-	rules := BuildRules(rc.lastGood)
-	if err := rc.backend.Apply(context.Background(), rules); err != nil {
-		rc.emit(Event{Type: "rollback", Message: "回滚失败", Detail: err.Error()})
-		return
+// clearPendingLocked 清空挂起状态与全部定时器（调用方需持锁）。
+func (rc *Reconciler) clearPendingLocked() {
+	if rc.pending != nil {
+		rc.clearWatchdogsLocked(rc.pending.Token)
 	}
 	rc.pending = nil
-	rc.emit(Event{Type: "rollback", Message: "已自动回滚到上一份规则", Detail: reason})
+	rc.prevGood = nil
+}
+
+// rollbackLocked 回滚到危险变更生效前的上一份成功状态（调用方需持锁）。
+// 返回待广播事件；调用方必须在**释放锁之后**再 emit，因为 app 层收到
+// rollback 事件会恢复数据库快照并重入 Sync，持锁 emit 会死锁。
+func (rc *Reconciler) rollbackLocked(reason string) Event {
+	token := ""
+	if rc.pending != nil {
+		token = rc.pending.Token
+	}
+	target := rc.prevGood
+	if target == nil {
+		target = rc.lastGood
+	}
+	if target == nil {
+		rc.clearPendingLocked()
+		return Event{Type: "rollback_fail", Token: token, Message: "无法回滚：没有可用的上一份快照", Detail: reason}
+	}
+	rules := BuildRules(target)
+	if err := rc.backend.Apply(context.Background(), rules); err != nil {
+		return Event{Type: "rollback_fail", Token: token, Message: "回滚失败", Detail: err.Error()}
+	}
+	rc.lastGood = target
+	rc.clearPendingLocked()
+	return Event{Type: "rollback", Token: token, Message: "已自动回滚到上一份规则", Detail: reason}
 }
 
 func (rc *Reconciler) cancelWatchdogLocked(key string) {
@@ -265,6 +312,12 @@ func (rc *Reconciler) cancelWatchdogLocked(key string) {
 		t.Stop()
 		delete(rc.watchdogs, key)
 	}
+}
+
+// clearWatchdogsLocked 停掉某个变更的全部定时器（延时 + 确认窗口）。
+func (rc *Reconciler) clearWatchdogsLocked(token string) {
+	rc.cancelWatchdogLocked(token + ":delay")
+	rc.cancelWatchdogLocked(token + ":confirm")
 }
 
 // Drift 对比内核实际规则与期望状态。
@@ -548,6 +601,12 @@ func classifyDanger(rules []Rule, clientIP string, sshPorts []int) string {
 			}
 			if clientIP != "" && cidrCovers(r.Src, clientIP) {
 				return fmt.Sprintf("黑名单包含当前管理地址 %s，可能导致面板失联", clientIP)
+			}
+		}
+		// 限速/限连规则（INPUT 链带端口、无来源限制）同样可能把管理员挡在 SSH 外
+		if r.Chain == ChainInput && r.Action == "drop" && r.Src == "" && r.DstPort != "" {
+			if portOverlapAny(r.DstPort, sshPorts) {
+				return fmt.Sprintf("限速/限连规则作用于 SSH 端口 %s，可能导致管理连接中断", r.DstPort)
 			}
 		}
 	}

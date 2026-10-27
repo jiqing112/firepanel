@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -277,8 +276,14 @@ func (s *Server) CreateProxyRoute(c *gin.Context) {
 	if req.PathMatch == "" {
 		req.PathMatch = "/"
 	}
-	if !strings.HasPrefix(req.PathMatch, "/") {
-		c.JSON(400, gin.H{"error": "路径必须以 / 开头"})
+	// 与恢复备份、Caddyfile 生成使用同一套校验：路径会原样写进 Caddyfile，
+	// 只检查 "/" 前缀会让换行/花括号等结构性字符先落库、到下发时才失败。
+	if !validPathMatch(req.PathMatch) {
+		c.JSON(400, gin.H{"error": "路径不合法：需以 / 开头，且不能包含控制字符、引号、反斜杠或花括号"})
+		return
+	}
+	if hp := strings.TrimSpace(req.HealthPath); hp != "" && !validPathMatch(hp) {
+		c.JSON(400, gin.H{"error": "健康检查路径不合法"})
 		return
 	}
 	if !validUpstream(strings.TrimSpace(req.UpstreamURL)) {
@@ -296,7 +301,7 @@ func (s *Server) CreateProxyRoute(c *gin.Context) {
 	r := &store.RPRoute{
 		DomainID: domainID, PathMatch: req.PathMatch,
 		UpstreamURL: strings.TrimSpace(req.UpstreamURL),
-		WsEnabled: ws, HealthPath: strings.TrimSpace(req.HealthPath), Enabled: enabled,
+		WsEnabled:   ws, HealthPath: strings.TrimSpace(req.HealthPath), Enabled: enabled,
 	}
 	if err := s.App.Store.CreateRPRoute(r); err != nil {
 		respErr(c, 500, err)
@@ -325,8 +330,8 @@ func (s *Server) UpdateProxyRoute(c *gin.Context) {
 	}
 	if req.PathMatch != "" {
 		r.PathMatch = strings.TrimSpace(req.PathMatch)
-		if !strings.HasPrefix(r.PathMatch, "/") {
-			c.JSON(400, gin.H{"error": "路径必须以 / 开头"})
+		if !validPathMatch(r.PathMatch) {
+			c.JSON(400, gin.H{"error": "路径不合法：需以 / 开头，且不能包含控制字符、引号、反斜杠或花括号"})
 			return
 		}
 	}
@@ -336,6 +341,10 @@ func (s *Server) UpdateProxyRoute(c *gin.Context) {
 			return
 		}
 		r.UpstreamURL = strings.TrimSpace(req.UpstreamURL)
+	}
+	if hp := strings.TrimSpace(req.HealthPath); hp != "" && !validPathMatch(hp) {
+		c.JSON(400, gin.H{"error": "健康检查路径不合法"})
+		return
 	}
 	if req.WsEnabled != nil {
 		r.WsEnabled = *req.WsEnabled
@@ -529,9 +538,11 @@ func (s *Server) emitProxyEvent(eventType, message, detail string) {
 	s.App.BroadcastEvent(fw.Event{Type: eventType, Message: message, Detail: detail, Timestamp: time.Now()})
 }
 
-/* ------------------------- Caddyfile（完全接管） ------------------------- */
+/* ------------------------- Caddyfile（托管段合并，不整盘覆盖） ------------------------- */
 
-// GetCaddyfile 预览当前将下发的完整 Caddyfile（文本）+ 自定义片段。
+// GetCaddyfile 返回服务器上真实的 Caddyfile + 面板将生成的托管段预览。
+// 注意：caddyfile/current 是磁盘上的实际内容，generated 才是面板生成物；
+// 两者不可混用，否则会把用户已有配置当成「面板内容」写回去。
 func (s *Server) GetCaddyfile(c *gin.Context) {
 	domains, err := s.App.Store.ListRPDomains()
 	if err != nil {
@@ -553,8 +564,29 @@ func (s *Server) GetCaddyfile(c *gin.Context) {
 			CaddyOpts: d.CaddyOpts, Routes: byDomain[d.ID],
 		})
 	}
-	cf := proxy.BuildCaddyfile(cfgs, s.App.Proxy.CaddyGlobal(), s.App.Proxy.CaddyCustom())
-	c.JSON(200, gin.H{"caddyfile": cf, "custom": s.App.Proxy.CaddyCustom(), "path": proxy.CaddyfilePath})
+	st := s.App.Proxy.ReadCaddyfile(c.Request.Context())
+	custom := proxy.EffectiveCustom(s.App.Proxy.CaddyCustom(), st)
+	mode := proxy.DetectMergeMode(st.Content)
+	// 预览即「实际会写入的内容」：追加到已有文件时全局块以注释给出（Caddy 要求全局块在首位）
+	gen := proxy.BuildManagedBlock(cfgs, s.App.Proxy.CaddyGlobal(), custom, mode != proxy.MergeAppend)
+
+	primary := st.Content
+	if !st.Exists {
+		primary = gen // 文件尚不存在：编辑器先给出待创建的托管段
+	}
+	c.JSON(200, gin.H{
+		"path":       st.Path,
+		"exists":     st.Exists,
+		"current":    st.Content, // 磁盘真实内容
+		"generated":  gen,        // 面板生成预览（与下发内容一致）
+		"caddyfile":  primary,    // 兼容旧前端
+		"custom":     custom,
+		"managed":    st.Managed,
+		"legacy":     st.Legacy,
+		"merge_mode": string(mode),
+		"hash":       st.Hash,
+		"read_error": st.ReadErr,
+	})
 }
 
 // SetCaddyCustom 保存用户自定义片段（原样追加到 Caddyfile 末尾）并热重载。
@@ -605,12 +637,13 @@ func (s *Server) SetCaddyGlobal(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
-// SetCaddyfileRaw 整文件手改保存：校验语法 → 写入生效。
-// 标记之后的内容回填为自定义片段（面板重新生成时保留）；其余为用户版本，
-// 域名增删会重写生成块（UI 有说明）。保存本身不触发重新生成。
+// SetCaddyfileRaw 整文件手改保存：校验语法 → 备份 → 写入生效。
+// 传入 base_hash 时做乐观并发校验：服务器文件已被别处改动则拒绝保存（409），
+// 避免把刚做的修改覆盖掉。写入前一律自动备份。
 func (s *Server) SetCaddyfileRaw(c *gin.Context) {
 	var req struct {
-		Content string `json:"content"`
+		Content  string `json:"content"`
+		BaseHash string `json:"base_hash"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "参数不合法"})
@@ -624,25 +657,47 @@ func (s *Server) SetCaddyfileRaw(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "文件过大（上限 512KB）"})
 		return
 	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	res, err := s.App.Proxy.DeployRawCaddyfileIfUnchanged(ctx, req.Content, req.BaseHash)
+	if err == proxy.ErrCaddyfileChanged {
+		st := s.App.Proxy.ReadCaddyfile(ctx)
+		s.audit(c, "update_fail", "proxy_caddyfile_raw", nil, map[string]any{"error": "conflict"})
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "服务器上的 Caddyfile 在你编辑期间已被修改，为避免覆盖已取消保存。请重新读取后再改。",
+			"current": st.Content,
+			"hash":    st.Hash,
+		})
+		return
+	}
+	if err != nil {
+		s.audit(c, "update_fail", "proxy_caddyfile_raw", nil, map[string]any{"error": err.Error()})
+		respErr(c, 400, err)
+		return
+	}
+	// 只有写入成功才同步自定义片段，避免校验失败时 settings 与磁盘不一致
 	custom := proxy.SplitCustom(req.Content)
 	if err := s.App.Store.SetSetting("caddy_custom", custom); err != nil {
 		respErr(c, 500, err)
 		return
 	}
 	s.App.Proxy.SetCaddyCustom(custom)
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-	defer cancel()
-	if err := s.App.Proxy.DeployRawCaddyfile(ctx, req.Content); err != nil {
-		s.audit(c, "update_fail", "proxy_caddyfile_raw", nil, map[string]any{"error": err.Error()})
-		respErr(c, 400, err)
-		return
+
+	s.audit(c, "update", "proxy_caddyfile_raw", nil, map[string]any{"bytes": len(req.Content), "backup": res.Backup})
+	detail := "已写入并重载"
+	if res.Backup != "" {
+		detail = "备份 " + res.Backup
 	}
-	s.audit(c, "update", "proxy_caddyfile_raw", nil, map[string]any{"bytes": len(req.Content)})
 	s.App.BroadcastEvent(fw.Event{
 		Type: "proxy_caddy_ok", Timestamp: time.Now(),
-		Message: "Caddyfile 已保存并重载（手改版本）",
+		Message: "Caddyfile 已保存并重载", Detail: detail,
 	})
-	c.JSON(200, gin.H{"ok": true})
+	c.JSON(200, gin.H{
+		"ok":     true,
+		"backup": res.Backup,
+		"hash":   proxy.CaddyfileHash(req.Content),
+		"path":   proxy.CaddyfilePath,
+	})
 }
 
 /* ------------------------- 自签证书（内网 IP 兜底） ------------------------- */
@@ -718,73 +773,6 @@ func dnsOrIPStr(dns []string, ips []net.IP) string {
 		return ips[0].String()
 	}
 	return "firepanel"
-}
-
-/* ------------------------- 备份恢复 ------------------------- */
-
-// Restore 从 JSON 备份恢复转发与黑/白名单（全量替换后同步内核）。
-func (s *Server) Restore(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 8<<20))
-	if err != nil {
-		c.JSON(400, gin.H{"error": "读取请求体失败"})
-		return
-	}
-	var snap struct {
-		ForwardRules []store.ForwardRule `json:"forward_rules"`
-		IPLists      []store.IPListEntry `json:"ip_lists"`
-	}
-	if err := json.Unmarshal(body, &snap); err != nil {
-		c.JSON(400, gin.H{"error": "备份文件格式错误"})
-		return
-	}
-	if s.App.HasPendingDanger() {
-		c.JSON(http.StatusConflict, gin.H{"error": "存在待确认的高危变更，请先确认或撤销"})
-		return
-	}
-	res, err := s.App.Mutate(c.ClientIP(), func() error {
-		// 全量替换
-		if old, _ := s.App.Store.ListForwards(); old != nil {
-			for _, f := range old {
-				_ = s.App.Store.DeleteForward(f.ID)
-			}
-		}
-		if old, _ := s.App.Store.ListIPLists(""); old != nil {
-			for _, e := range old {
-				_ = s.App.Store.DeleteIPList(e.ID)
-			}
-		}
-		for i := range snap.ForwardRules {
-			f := snap.ForwardRules[i]
-			f.ID = 0
-			if err := fwValidateForward(&f); err != nil {
-				return err
-			}
-			if err := s.App.Store.CreateForward(&f); err != nil {
-				return err
-			}
-		}
-		for i := range snap.IPLists {
-			e := snap.IPLists[i]
-			e.ID = 0
-			if err := s.App.Store.CreateIPList(&e); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		respErr(c, 500, err)
-		return
-	}
-	s.audit(c, "restore", "system", nil, map[string]any{
-		"forwards": len(snap.ForwardRules), "ip_lists": len(snap.IPLists),
-	})
-	c.JSON(200, gin.H{"sync": res, "forwards": len(snap.ForwardRules), "ip_lists": len(snap.IPLists)})
-}
-
-func fwValidateForward(f *store.ForwardRule) error {
-	// 备份恢复走与 API 相同的校验（复用 fw 层）
-	return fw.ValidateForward(f.Name, f.Protocol, f.ListenPort, f.SrcIP, f.DstIP, f.DstDomain, f.DstPort)
 }
 
 /* ------------------------- 日志中心 ------------------------- */

@@ -3,8 +3,28 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
+
+// validRoutePath 路径匹配的存储层兜底校验。
+// API 层只校验「以 / 开头」，但路径会被原样拼进 Caddyfile，
+// 换行/花括号/引号可以闭合站点块注入指令，因此在写入入口统一拦下。
+func validRoutePath(p string) bool {
+	if p == "" || len(p) > 200 || !strings.HasPrefix(p, "/") {
+		return false
+	}
+	if strings.ContainsAny(p, "{}#\"'\\") {
+		return false
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 
 /* ------------------------- 反代域名 ------------------------- */
 
@@ -12,8 +32,8 @@ type RPDomain struct {
 	ID            int64      `json:"id"`
 	Domain        string     `json:"domain"`
 	Enabled       bool       `json:"enabled"`
-	TLSMode       string     `json:"tls_mode"` // auto|manual|none
-	Challenge     string     `json:"challenge"` // ""=auto | http | alpn | dns（tls_mode=auto 时生效）
+	TLSMode       string     `json:"tls_mode"`   // auto|manual|none
+	Challenge     string     `json:"challenge"`  // ""=auto | http | alpn | dns（tls_mode=auto 时生效）
 	CaddyOpts     string     `json:"caddy_opts"` // Caddy 站点选项 JSON：encode/security_headers/log_access
 	CertPEM       string     `json:"-"`
 	KeyPEM        string     `json:"-"`
@@ -167,6 +187,12 @@ func (s *Store) GetRPRoute(id int64) (*RPRoute, error) {
 }
 
 func (s *Store) CreateRPRoute(r *RPRoute) error {
+	if r.PathMatch == "" {
+		r.PathMatch = "/"
+	}
+	if !validRoutePath(r.PathMatch) {
+		return fmt.Errorf("路径 %q 不合法：需以 / 开头，且不能包含控制字符、引号或花括号", r.PathMatch)
+	}
 	res, err := s.db.Exec(`INSERT INTO rp_routes(domain_id,path_match,upstream_url,ws_enabled,health_path,enabled)
 		VALUES(?,?,?,?,?,?)`,
 		r.DomainID, r.PathMatch, r.UpstreamURL, boolInt(r.WsEnabled), r.HealthPath, boolInt(r.Enabled))
@@ -178,6 +204,12 @@ func (s *Store) CreateRPRoute(r *RPRoute) error {
 }
 
 func (s *Store) UpdateRPRoute(r *RPRoute) error {
+	if r.PathMatch == "" {
+		r.PathMatch = "/"
+	}
+	if !validRoutePath(r.PathMatch) {
+		return fmt.Errorf("路径 %q 不合法：需以 / 开头，且不能包含控制字符、引号或花括号", r.PathMatch)
+	}
 	res, err := s.db.Exec(`UPDATE rp_routes SET path_match=?,upstream_url=?,ws_enabled=?,health_path=?,enabled=? WHERE id=?`,
 		r.PathMatch, r.UpstreamURL, boolInt(r.WsEnabled), r.HealthPath, boolInt(r.Enabled), r.ID)
 	if err != nil {

@@ -114,6 +114,12 @@ func BuildRules(st *DesiredState) []Rule {
 		if f.Protocol == "both" {
 			protos = []string{"tcp", "udp"}
 		}
+		// FORWARD 看到的是 DNAT 之后的地址/端口：目标端口留空表示「保持原监听端口」，
+		// 若这里也留空就会放行到目标 IP 的所有端口（比实际转发宽）。
+		fwdDstPort := f.DstPort
+		if fwdDstPort == "" {
+			fwdDstPort = f.ListenPort
+		}
 		for _, proto := range protos {
 			// DNAT
 			rules = append(rules, Rule{
@@ -124,7 +130,7 @@ func BuildRules(st *DesiredState) []Rule {
 			// FORWARD 放行（策略为 DROP 时必需）
 			rules = append(rules, Rule{
 				Tag: next("fw", f.ID), Chain: ChainFwd, Family: family,
-				Proto: proto, Dst: normalizeCIDR(f.DstIP), DstPort: f.DstPort,
+				Proto: proto, Dst: normalizeCIDR(f.DstIP), DstPort: fwdDstPort,
 				Action: "accept", Comment: f.Name,
 			})
 		}
@@ -187,16 +193,18 @@ func normalizeCIDR(v string) string {
 	if ip == nil {
 		return ""
 	}
-	if ip.To4() != nil {
-		return v + "/32"
+	// 使用解析后的规范形式（如 ::ffff:1.2.3.4 → 1.2.3.4），避免拼出错误的掩码长度
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String() + "/32"
 	}
-	return v + "/128"
+	return ip.String() + "/128"
 }
 
 // dnatTarget 计算 DNAT --to-destination：
-//   监听端口段 + 目标同宽端口段 → ip:start-end
-//   监听端口段 + 目标端口省略 → ip（保持原端口）
-//   单端口 → ip:port
+//
+//	监听端口段 + 目标同宽端口段 → ip:start-end
+//	监听端口段 + 目标端口省略 → ip（保持原端口）
+//	单端口 → ip:port
 func dnatTarget(dstIP, listenPort, dstPort string) string {
 	listenRange := parsePortRange(listenPort)
 	dstRange := parsePortRange(dstPort)
@@ -268,8 +276,13 @@ func ValidateForward(name, protocol, listenPort, srcIP, dstIP, dstDomain, dstPor
 		if !validDomain(dstDomain) {
 			return errStr("目标域名格式错误")
 		}
-	} else if parseIP(dstIP) == nil {
+	}
+	// 无论是否同时提供域名，只要给了目标 IP 就必须合法
+	if dstIP != "" && parseIP(dstIP) == nil {
 		return errStr("目标 IP 无效")
+	}
+	if dstIP == "" && dstDomain == "" {
+		return errStr("目标 IP 或域名必填其一")
 	}
 	if srcIP != "" && normalizeCIDR(srcIP) == "" {
 		return errStr("来源限制必须是合法 IP 或 CIDR")
@@ -313,7 +326,41 @@ func (e errStr) Error() string { return string(e) }
 // NormalizeCIDRCheck 导出校验：合法 CIDR/IP 返回规范化形式，否则空串。
 func NormalizeCIDRCheck(v string) string { return normalizeCIDR(v) }
 
-// NormalizeIPCheck 导出校验：合法 IP 返回原样，否则空串。
+// NormalizeIPCheck 导出校验：合法 IP 返回规范化形式（IPv4-mapped 归一为 IPv4），否则空串。
 func NormalizeIPCheck(v string) string {
-	return strings.TrimSpace(v)
+	ip := net.ParseIP(strings.TrimSpace(v))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// ruleTokenSafe 校验会被拼入 iptables-restore / nft 脚本的字段仅含安全字符。
+// 纵深防御：正常路径的字段已在 API 层校验；此处兜底，防止任何绕过（如历史遗留的
+// 未校验字段）导致换行/引号注入到防火墙脚本中。
+func ruleTokenSafe(r Rule) error {
+	for _, f := range []struct{ name, val string }{
+		{"src", r.Src}, {"dst", r.Dst}, {"to", r.To},
+		{"out_iface", r.OutIface}, {"proto", r.Proto}, {"dst_port", r.DstPort},
+	} {
+		for _, ch := range f.val {
+			safe := ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' ||
+				ch >= '0' && ch <= '9' ||
+				ch == '.' || ch == ':' || ch == '/' || ch == '-' || ch == '_'
+			if !safe {
+				return fmt.Errorf("规则 %s 字段 %s 含非法字符 %q，已拒绝应用", r.Tag, f.name, string(ch))
+			}
+		}
+	}
+	return nil
+}
+
+// checkRulesSafe 逐条做安全字符校验（后端 Apply 前调用）。
+func checkRulesSafe(rules []Rule) error {
+	for _, r := range rules {
+		if err := ruleTokenSafe(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -27,8 +27,12 @@ Token 通过登录/初始化获取，有效期默认 12 小时。
 ```
 POST /system/danger/confirm   {"token": "...", "stage": 1}   # 生效前：立即应用
 POST /system/danger/confirm   {"token": "...", "stage": 2}   # 生效后：确认保留（取消自动回滚）
-POST /system/danger/cancel    {"token": "..."}               # 撤销：数据库恢复变更前状态
+POST /system/danger/cancel    {"token": "..."}               # 撤销：未生效则丢弃；已生效则立即回滚
 ```
+
+- 登录限速按「来源 IP + 用户名」双维度计数（伪造 `X-Forwarded-For` 无效，仅信任 `server.trusted_proxies`）。
+- 挂起状态与变更前快照会持久化到 settings (`pending_danger`)：进程/主机在延时或确认窗口内重启时，
+  启动阶段会**自动回滚到变更前状态**（未确认的危险变更视为未发生），避免绕过二次确认。
 
 ## 认证与初始化
 
@@ -54,8 +58,8 @@ POST /system/danger/cancel    {"token": "..."}               # 撤销：数据�
 | POST | /system/drift/check | 立即执行漂移检测 |
 | POST | /system/sync | 用面板期望状态覆盖内核（可能触发 danger） |
 | GET  | /dashboard/summary | 仪表盘：连接数/速率/今日流量/命中排行/采样 |
-| GET  | /system/backup?format=json\|iptables-save\|nft | 导出备份（下载） |
-| POST | /system/restore | 从 JSON 备份恢复（全量替换转发与名单，可能触发 danger） |
+| GET  | /system/backup?format=json\|iptables-save\|nft | 导出备份（下载）。JSON 含转发/名单/限速/NAT/定时任务/告警/防爆破/台账/反代域名与路由；不含用户与设置（含 JWT 密钥、DNS-01 凭据） |
+| POST | /system/restore | 从 JSON 备份恢复（全量替换上述结构化配置，可能触发 danger）。先全量校验再单事务写入；成功后热重载反代/定时任务/告警/防爆破 |
 | GET  | /audit?limit=200 | 操作审计（新→旧） |
 | GET  | /settings/basicauth | 整站 Basic Auth 状态（密码不回传；`source`: file/config） |
 | POST | /settings/basicauth | `{enabled, username, password?}`（password 留空保持原密码；立即生效）。凭据持久化在**程序目录 basicauth.yaml**（0600），手动编辑该文件后重启面板生效 |
@@ -125,7 +129,8 @@ POST /system/danger/cancel    {"token": "..."}               # 撤销：数据�
 | GET  | /proxy/env | 环境探测：80/443 可用性与占用进程、当前引擎与监听、推荐监听端口与挑战方式、Caddy 安装检测 |
 | POST | /proxy/engine | 切换引擎与监听端口 `{engine: builtin\|caddy, http_addr?: ":端口", https_addr?: ":端口"}`，立即重建监听并持久化（重启保持）；切 caddy 需本机已安装 Caddy，切换时自动启停 Caddy 服务 |
 | POST | /proxy/caddy/install | 一键安装 Caddy（按发行版选包管理器，Debian/Ubuntu 回退官方仓库；同步执行可达数分钟；装完自动停用其自启服务，由引擎切换拉起） |
-| GET  | /proxy/caddyfile | 预览将下发的完整 Caddyfile（文本；含全局块/站点块/opts） |
+| GET  | /proxy/caddyfile | 读取服务器上**实际的** Caddyfile：`{path, exists, current, generated, managed, legacy, merge_mode, hash, read_error}`；`current` 为磁盘真实内容，`generated` 为面板将生成的托管段预览 |
+| POST | /proxy/caddyfile | 手改保存 `{content, base_hash?}`：先 validate → 自动备份 `.bak-时间戳` → 写入 → reload；`base_hash` 与服务器当前文件不一致时返回 409（防覆盖他人改动）；校验失败不落盘 |
 | GET  | /proxy/caddy-global | Caddyfile 全局选项（email/debug） |
 | POST | /proxy/caddy-global | `{email, debug}`，保存后自动重载 Caddy |
 | GET  | /proxy/dns-config | DNS-01 凭据（token 脱敏） |

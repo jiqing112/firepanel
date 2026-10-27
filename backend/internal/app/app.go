@@ -44,11 +44,15 @@ type App struct {
 	// 广播事件（WS events / logs topic 接线）
 	Broadcast func(topic string, payload any)
 
-	mu          sync.Mutex
-	drift       *fw.DriftReport
-	pendingSnap snapshotState // 危险变更挂起期间的数据库快照（撤销时恢复）
+	mu           sync.Mutex
+	drift        *fw.DriftReport
+	pendingSnap  *store.Bundle // 危险变更挂起期间的数据库快照（撤销时恢复）
 	notifyEvents map[string]bool
-	lastErr     string
+	lastErr      string
+
+	// mutateMu 串行化「快照 → 写库 → 同步内核」编排。
+	// 缺少它会出并发交错：A 的快照覆盖 B 刚写入的行，或 A 失败回滚时删掉 B 的规则。
+	mutateMu sync.Mutex
 
 	// 整站 Basic Auth（运行时可变，中间件每次请求读取）
 	basicAuth atomic.Pointer[BasicAuthState]
@@ -146,9 +150,9 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) (*App, error) {
 			a.Log.Error("jail 封禁同步内核失败", "err", err)
 		}
 		a.broadcast("events", fw.Event{
-			Type:    "jail_ban",
-			Message: fmt.Sprintf("防爆破「%s」已封禁 %s，至 %s 解封", j.Name, ip, until.Format("15:04:05")),
-			Detail:  fmt.Sprintf("阈值 %d 次 / %d 秒，封禁时长 %d 秒", j.Threshold, j.FindTime, j.BanTime),
+			Type:      "jail_ban",
+			Message:   fmt.Sprintf("防爆破「%s」已封禁 %s，至 %s 解封", j.Name, ip, until.Format("15:04:05")),
+			Detail:    fmt.Sprintf("阈值 %d 次 / %d 秒，封禁时长 %d 秒", j.Threshold, j.FindTime, j.BanTime),
 			Timestamp: time.Now(),
 		})
 		_ = a.Store.AddAudit(&store.AuditEntry{
@@ -388,9 +392,9 @@ func (a *App) ProxyHealthLoop(ctx context.Context) {
 					_ = a.Store.SetRPRouteHealth(tgt.RouteID, res.Status, time.Now())
 					if prev != res.Status {
 						a.broadcast("events", fw.Event{
-							Type: "health_" + res.Status,
-							Message: fmt.Sprintf("上游 %s（%s）状态变更: %s", tgt.Upstream, tgt.Domain, res.Status),
-							Detail:  res.Detail,
+							Type:      "health_" + res.Status,
+							Message:   fmt.Sprintf("上游 %s（%s）状态变更: %s", tgt.Upstream, tgt.Domain, res.Status),
+							Detail:    res.Detail,
 							Timestamp: time.Now(),
 						})
 					}
@@ -412,6 +416,31 @@ func (a *App) BroadcastEvent(e fw.Event) {
 	a.mu.Unlock()
 	a.broadcast("events", e)
 	a.dispatchNotify(e)
+	if eventAppliesPendingDanger(e) {
+		a.markPendingDangerApplied(e.Token)
+	}
+	// 超时自动回滚成功：内核已回到生效前状态，数据库必须同步回滚，
+	// 否则下一次漂移检测/重启重放会把危险规则再次写回内核。
+	if e.Type == "rollback" {
+		a.OnDangerCancelled()
+	}
+	// 危险变更应用/回滚失败：reconciler 已无法自动恢复，必须清掉挂起状态，
+	// 否则 PendingExists 永远为 true，所有写接口都被 409 拦住。
+	// 事件是在 reconciler 持锁时发出的，这里必须异步清理，否则死锁。
+	if e.Type == "apply_fail" || e.Type == "rollback_fail" {
+		go func() {
+			a.Rec.ClearPending()
+			a.OnDangerCancelled()
+		}()
+	}
+}
+
+// ClearPendingSnap 危险变更被确认（不再回滚）：丢弃挂起快照与持久化标记。
+func (a *App) ClearPendingSnap() {
+	a.mu.Lock()
+	a.pendingSnap = nil
+	a.mu.Unlock()
+	a.clearPersistedPendingDanger()
 }
 
 func (a *App) broadcast(topic string, payload any) {
@@ -421,129 +450,113 @@ func (a *App) broadcast(topic string, payload any) {
 }
 
 // Desired 从 store 装载期望状态（仅启用且未过期的规则）。
-func (a *App) Desired() *fw.DesiredState {
+// 注意：这里只返回内核需要的四类资源；备份/回滚请用 store.ExportBundle。
+// 任何一类读取失败都返回错误：若静默当作空集合，一次数据库抖动就会
+// 把内核里的全部面板规则清空（等于关掉所有转发与黑名单）。
+func (a *App) Desired() (*fw.DesiredState, error) {
 	st := &fw.DesiredState{}
 	now := time.Now()
-	if fwds, err := a.Store.ListForwards(); err == nil {
-		for _, f := range fwds {
-			if !f.Enabled {
-				continue
-			}
-			if f.ExpiresAt != nil && f.ExpiresAt.Before(now) {
-				continue
-			}
-			st.Forwards = append(st.Forwards, fw.ForwardSpec{
-				ID: f.ID, Name: f.Name, Protocol: f.Protocol, ListenPort: f.ListenPort,
-				SrcIP: f.SrcIP, DstIP: f.DstIP, DstDomain: f.DstDomain, DstPort: f.DstPort, Enabled: true,
-			})
-		}
+	fwds, err := a.Store.ListForwards()
+	if err != nil {
+		return nil, fmt.Errorf("读取转发规则: %w", err)
 	}
-	if lists, err := a.Store.ListIPLists(""); err == nil {
-		for _, e := range lists {
-			if e.ExpiresAt != nil && e.ExpiresAt.Before(now) {
-				continue
-			}
-			st.IPLists = append(st.IPLists, fw.IPListSpec{
-				ID: e.ID, ListType: e.ListType, IP: e.IPOrCIDR,
-			})
+	for _, f := range fwds {
+		if !f.Enabled {
+			continue
 		}
-	}
-	if rls, err := a.Store.ListRateLimits(); err == nil {
-		for _, r := range rls {
-			if !r.Enabled {
-				continue
-			}
-			st.RateLimits = append(st.RateLimits, fw.RateLimitSpec{
-				ID: r.ID, Name: r.Name, Proto: r.Proto, Port: r.Port,
-				PerSrc: r.PerSrc, Rate: r.Rate, RateUnit: r.RateUnit,
-				Burst: r.Burst, ConnLimit: r.ConnLimit, Enabled: true,
-			})
+		if f.ExpiresAt != nil && f.ExpiresAt.Before(now) {
+			continue
 		}
+		st.Forwards = append(st.Forwards, fw.ForwardSpec{
+			ID: f.ID, Name: f.Name, Protocol: f.Protocol, ListenPort: f.ListenPort,
+			SrcIP: f.SrcIP, DstIP: f.DstIP, DstDomain: f.DstDomain, DstPort: f.DstPort, Enabled: true,
+		})
 	}
-	if nats, err := a.Store.ListNAT(); err == nil {
-		for _, n := range nats {
-			if !n.Enabled {
-				continue
-			}
-			st.NAT = append(st.NAT, fw.NATSpec{
-				ID: n.ID, Name: n.Name, Type: n.Type,
-				SrcCIDR: n.SrcCIDR, OutIface: n.OutIface, ToAddr: n.ToAddr, Enabled: true,
-			})
+	lists, err := a.Store.ListIPLists("")
+	if err != nil {
+		return nil, fmt.Errorf("读取 IP 名单: %w", err)
+	}
+	for _, e := range lists {
+		if e.ExpiresAt != nil && e.ExpiresAt.Before(now) {
+			continue
 		}
+		st.IPLists = append(st.IPLists, fw.IPListSpec{
+			ID: e.ID, ListType: e.ListType, IP: e.IPOrCIDR,
+		})
 	}
-	return st
+	rls, err := a.Store.ListRateLimits()
+	if err != nil {
+		return nil, fmt.Errorf("读取限速规则: %w", err)
+	}
+	for _, r := range rls {
+		if !r.Enabled {
+			continue
+		}
+		st.RateLimits = append(st.RateLimits, fw.RateLimitSpec{
+			ID: r.ID, Name: r.Name, Proto: r.Proto, Port: r.Port,
+			PerSrc: r.PerSrc, Rate: r.Rate, RateUnit: r.RateUnit,
+			Burst: r.Burst, ConnLimit: r.ConnLimit, Enabled: true,
+		})
+	}
+	nats, err := a.Store.ListNAT()
+	if err != nil {
+		return nil, fmt.Errorf("读取 NAT 规则: %w", err)
+	}
+	for _, n := range nats {
+		if !n.Enabled {
+			continue
+		}
+		st.NAT = append(st.NAT, fw.NATSpec{
+			ID: n.ID, Name: n.Name, Type: n.Type,
+			SrcCIDR: n.SrcCIDR, OutIface: n.OutIface, ToAddr: n.ToAddr, Enabled: true,
+		})
+	}
+	return st, nil
 }
 
 // Sync 把当前期望状态同步到内核（含危险判定）。clientIP 为发起方（可为空）。
+// 先解析域名再交给 reconciler：危险变更会暂存这份状态，未解析的状态会让
+// 域名目标规则在真正生效时被跳过。
 func (a *App) Sync(clientIP string) (*fw.SyncResult, error) {
-	return a.Rec.Sync(context.Background(), a.Desired(), clientIP)
+	if a.HasPendingDanger() {
+		return nil, errors.New("存在待确认的高危变更，请先确认或撤销")
+	}
+	desired, err := a.Desired()
+	if err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	resolved, err := a.Rec.ResolveDomains(ctx, desired)
+	if err != nil {
+		return nil, err
+	}
+	return a.Rec.Sync(ctx, resolved, clientIP)
 }
 
-// beforeSnapshot 变更前的期望状态（用于失败回滚与审计）。
-func (a *App) beforeSnapshot() json.RawMessage {
-	return json.RawMessage(mustMarshal(a.Desired()))
-}
+func (a *App) snapshotRows() (store.Bundle, error) { return a.Store.ExportBundle() }
 
-type snapshotState struct {
-	Forwards   []store.ForwardRule   `json:"forwards"`
-	IPLists    []store.IPListEntry   `json:"ip_lists"`
-	RateLimits []store.RateLimitRule `json:"rate_limits"`
-	NATRules   []store.NATRule       `json:"nat_rules"`
-}
-
-func (a *App) snapshotRows() snapshotState {
-	s := snapshotState{}
-	if fwds, err := a.Store.ListForwards(); err == nil {
-		s.Forwards = fwds
+// restoreRows 失败回滚：单事务恢复行数据，再尽力同步内核。
+// 同步前必须解析域名，否则域名目标的转发规则在回滚后会从内核里消失。
+// 事务失败会记录错误（不再静默），调用方仍返回原始失败原因。
+func (a *App) restoreRows(b store.Bundle) {
+	if err := a.Store.ReplaceAll(b); err != nil {
+		a.Log.Error("数据库回滚失败，当前数据可能处于中间状态", "err", err)
+		return
 	}
-	if lists, err := a.Store.ListIPLists(""); err == nil {
-		s.IPLists = lists
+	desired, err := a.Desired()
+	if err != nil {
+		a.Log.Error("回滚后读取期望状态失败", "err", err)
+		return
 	}
-	if rls, err := a.Store.ListRateLimits(); err == nil {
-		s.RateLimits = rls
+	ctx := context.Background()
+	resolved, err := a.Rec.ResolveDomains(ctx, desired)
+	if err != nil {
+		a.Log.Error("回滚后解析域名失败", "err", err)
+		return
 	}
-	if nats, err := a.Store.ListNAT(); err == nil {
-		s.NATRules = nats
+	if _, err := a.Rec.Sync(ctx, resolved, ""); err != nil {
+		a.Log.Error("回滚后同步内核失败", "err", err)
 	}
-	return s
-}
-
-// restoreRows 失败回滚：恢复行数据并尽力同步内核。
-func (a *App) restoreRows(s snapshotState) {
-	// 简化实现：逐条重建（规则量级小，可接受）
-	if fwds, _ := a.Store.ListForwards(); fwds != nil {
-		for _, f := range fwds {
-			_ = a.Store.DeleteForward(f.ID)
-		}
-	}
-	if lists, _ := a.Store.ListIPLists(""); lists != nil {
-		for _, e := range lists {
-			_ = a.Store.DeleteIPList(e.ID)
-		}
-	}
-	if rls, _ := a.Store.ListRateLimits(); rls != nil {
-		for _, r := range rls {
-			_ = a.Store.DeleteRateLimit(r.ID)
-		}
-	}
-	if nats, _ := a.Store.ListNAT(); nats != nil {
-		for _, n := range nats {
-			_ = a.Store.DeleteNAT(n.ID)
-		}
-	}
-	for i := range s.Forwards {
-		_ = a.Store.CreateForward(&s.Forwards[i])
-	}
-	for i := range s.IPLists {
-		_ = a.Store.CreateIPList(&s.IPLists[i])
-	}
-	for i := range s.RateLimits {
-		_ = a.Store.CreateRateLimit(&s.RateLimits[i])
-	}
-	for i := range s.NATRules {
-		_ = a.Store.CreateNAT(&s.NATRules[i])
-	}
-	_, _ = a.Rec.Sync(context.Background(), a.Desired(), "")
 }
 
 // HasPendingDanger 是否存在待确认的高危变更（挂起期间拒绝新的变更请求）。
@@ -553,56 +566,95 @@ func (a *App) HasPendingDanger() bool { return a.Rec.PendingExists() }
 func (a *App) OnDangerCancelled() {
 	a.mu.Lock()
 	snap := a.pendingSnap
-	a.pendingSnap = snapshotState{}
+	a.pendingSnap = nil
 	a.mu.Unlock()
-	if snap.Forwards != nil || snap.IPLists != nil || snap.RateLimits != nil || snap.NATRules != nil {
-		a.restoreRows(snap)
+	if snap != nil {
+		a.restoreRows(*snap)
 	}
+	// 恢复成功后才清标记：若 restoreRows 失败，保留标记让下次启动继续补救
+	a.clearPersistedPendingDanger()
+	a.ReloadAuxAsync()
 }
 
-// Mutate 事务化变更编排：快照 → 变更 → 同步内核；失败恢复。
+// Mutate 事务化变更编排：快照 → 变更 → 同步内核；任一环节失败都恢复快照。
 // 危险变更：保留数据库新状态（期望态），内核在确认/延时后生效；撤销时恢复快照。
+// 全流程串行化：并发写请求不能基于同一份旧快照互相覆盖。
 func (a *App) Mutate(clientIP string, mutate func() error) (*fw.SyncResult, error) {
+	a.mutateMu.Lock()
+	defer a.mutateMu.Unlock()
+
 	if a.HasPendingDanger() {
 		return nil, errors.New("存在待确认的高危变更，请先确认或撤销")
 	}
-	snap := a.snapshotRows()
+	snap, err := a.snapshotRows()
+	if err != nil {
+		// 快照残缺时绝不能继续：失败回滚会把缺失的部分当成「本来就不存在」删掉
+		return nil, fmt.Errorf("变更前读取快照失败，已取消本次变更: %w", err)
+	}
 	if err := mutate(); err != nil {
+		// 闭包可能已经写了半截（如恢复备份逐条校验失败）：必须回滚，
+		// 否则数据库停在「已清空/半恢复」状态，而内核仍是旧规则。
+		a.restoreRows(snap)
 		return nil, err
 	}
 	res, err := a.Sync(clientIP)
 	if err != nil {
 		a.Log.Error("规则同步失败，回滚数据库", "err", err)
 		a.restoreRows(snap)
+		a.clearPersistedPendingDanger()
 		return nil, fmt.Errorf("规则应用失败已回滚: %w", err)
 	}
 	if res != nil && res.Danger {
+		// 内核尚未生效：不能把当前期望态记成 last-good。
 		a.mu.Lock()
-		a.pendingSnap = snap
+		a.pendingSnap = &snap
 		a.mu.Unlock()
+		// 持久化「变更前快照 + 挂起标记」：进程重启/主机重启后必须能识别
+		// 未完成的高危变更，否则启动重放会绕过延时确认直接生效（可能锁死 SSH）。
+		a.persistPendingDanger(&pendingDangerRecord{
+			Token: res.Token, Reason: res.Reason, CreatedAt: time.Now(), Prior: snap,
+		})
+		return res, nil
 	}
-	// 成功后保存 last-good 快照到 sync_state
-	a.saveSyncOK(res)
+	a.clearPersistedPendingDanger()
+	a.saveSyncOK()
 	return res, nil
 }
 
-func (a *App) saveSyncOK(res *fw.SyncResult) {
-	prev, _ := a.Store.GetSyncState()
-	lastGood := ""
-	if prev != nil {
-		lastGood = prev.LastGoodJSON
+// saveSyncOK 记录本次成功应用的期望状态（真正写入 last_good_json）。
+func (a *App) saveSyncOK() {
+	desired, err := a.Desired()
+	if err != nil {
+		a.Log.Warn("读取期望状态失败，last-good 快照未更新", "err", err)
+		return
 	}
-	_ = a.Store.UpsertSyncState(&store.SyncState{
+	b, err := json.Marshal(desired)
+	if err != nil {
+		a.Log.Warn("序列化期望状态失败，last-good 快照未更新", "err", err)
+		return
+	}
+	prev, _ := a.Store.GetSyncState()
+	drift := ""
+	if prev != nil {
+		drift = prev.DriftJSON
+	}
+	if err := a.Store.UpsertSyncState(&store.SyncState{
 		Backend:      a.Backend.Name(),
 		LastOKAt:     ptrTime(time.Now()),
-		DriftJSON:    "",
-		LastGoodJSON: lastGood,
-	})
+		DriftJSON:    drift,
+		LastGoodJSON: string(b),
+	}); err != nil {
+		a.Log.Warn("写入 last-good 快照失败", "err", err)
+	}
 }
 
 // CheckDrift 执行漂移检测并缓存结果。
 func (a *App) CheckDrift() (*fw.DriftReport, error) {
-	rep, err := a.Rec.Drift(context.Background(), a.Desired())
+	desired, err := a.Desired()
+	if err != nil {
+		return nil, err
+	}
+	rep, err := a.Rec.Drift(context.Background(), desired)
 	if err != nil {
 		return nil, err
 	}

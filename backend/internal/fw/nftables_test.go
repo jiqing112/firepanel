@@ -24,28 +24,28 @@ func TestParseNftVMShapes(t *testing.T) {
 		wantSpec []string // spec 必须包含的片段
 	}{
 		{
-			name:  "saddr 黑名单",
-			exprs: `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":"192.0.2.55"}},{"counter":{"packets":0,"bytes":0}},{"drop":null}]`,
+			name:     "saddr 黑名单",
+			exprs:    `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":"192.0.2.55"}},{"counter":{"packets":0,"bytes":0}},{"drop":null}]`,
 			wantSpec: []string{"ip saddr 192.0.2.55", "drop"},
 		},
 		{
-			name:  "MASQ 前缀对象 + oifname + masquerade",
-			exprs: `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":{"prefix":{"addr":"192.168.218.0","len":24}}}},{"match":{"op":"==","left":{"payload":{"protocol":"oifname","field":""}},"right":"ens18"}},{"counter":{"packets":0,"bytes":0}},{"masquerade":null}]`,
+			name:     "MASQ 前缀对象 + oifname + masquerade",
+			exprs:    `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":{"prefix":{"addr":"192.168.218.0","len":24}}}},{"match":{"op":"==","left":{"payload":{"protocol":"oifname","field":""}},"right":"ens18"}},{"counter":{"packets":0,"bytes":0}},{"masquerade":null}]`,
 			wantSpec: []string{"ip saddr 192.168.218.0/24", "oifname ens18", "masquerade"},
 		},
 		{
-			name:  "DNAT 端口",
-			exprs: `[{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":18080}},{"counter":{"packets":0,"bytes":0}},{"dnat":{"addr":"127.0.0.1","port":18081,"family":"ip"}}]`,
+			name:     "DNAT 端口",
+			exprs:    `[{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":18080}},{"counter":{"packets":0,"bytes":0}},{"dnat":{"addr":"127.0.0.1","port":18081,"family":"ip"}}]`,
 			wantSpec: []string{"tcp dport 18080", "dnat to 127.0.0.1:18081"},
 		},
 		{
-			name:  "FORWARD accept",
-			exprs: `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"127.0.0.1"}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":18081}},{"counter":{"packets":0,"bytes":0}},{"accept":null}]`,
+			name:     "FORWARD accept",
+			exprs:    `[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"127.0.0.1"}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":18081}},{"counter":{"packets":0,"bytes":0}},{"accept":null}]`,
 			wantSpec: []string{"ip daddr 127.0.0.1", "tcp dport 18081", "accept"},
 		},
 		{
-			name:  "限速 meter+limit",
-			exprs: `[{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":80}},{"meter":{"key":1,"name":"fp1_tcp"}},{"limit":{"rate":30,"unit":"minute","burst":10,"per":"ip"}},{"counter":{"packets":0,"bytes":0}},{"drop":null}]`,
+			name:     "限速 meter+limit",
+			exprs:    `[{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":80}},{"meter":{"key":1,"name":"fp1_tcp"}},{"limit":{"rate":30,"unit":"minute","burst":10,"per":"ip"}},{"counter":{"packets":0,"bytes":0}},{"drop":null}]`,
 			wantSpec: []string{"tcp dport 80", "limit rate over 30/minute", "drop"},
 		},
 	}

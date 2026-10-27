@@ -11,8 +11,8 @@ import (
 
 // DNSProviderConfig DNS-01 挑战的 DNS 服务商凭据（全局一份，存 settings）。
 type DNSProviderConfig struct {
-	Provider string `json:"provider"` // cloudflare | alidns | dnspod | ""（未配置）
-	APIToken string `json:"api_token"`
+	Provider  string `json:"provider"` // cloudflare | alidns | dnspod | ""（未配置）
+	APIToken  string `json:"api_token"`
 	SecretKey string `json:"secret_key"` // alidns 的 AccessKeySecret
 }
 

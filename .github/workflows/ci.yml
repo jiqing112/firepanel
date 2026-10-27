@@ -21,6 +21,17 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # 质量门禁：格式不通过直接失败（此前只有 build/test，格式漂移无人发现）
+      - name: 后端格式检查
+        run: |
+          cd backend
+          bad=$(gofmt -l ./cmd ./internal)
+          if [ -n "$bad" ]; then
+            echo "以下文件未 gofmt："
+            echo "$bad"
+            exit 1
+          fi
+
       - name: 前端构建
         run: |
           cd frontend
@@ -28,10 +39,25 @@ jobs:
           npm run build
           cd ..
           rm -rf backend/internal/web/dist
-          cp -r frontend/dist backend/internal/web/dist
+          mkdir -p backend/internal/web/dist
+          cp -r frontend/dist/. backend/internal/web/dist/
+
+      - name: 前端类型检查
+        run: cd frontend && npm run check
+
+      - name: 后端静态检查
+        run: cd backend && go vet ./...
 
       - name: 后端测试
         run: cd backend && CGO_ENABLED=0 go test ./...
 
       - name: 后端编译检查
         run: cd backend && CGO_ENABLED=0 GOOS=linux go build -trimpath ./cmd/firepanel
+
+      # 干净检出必须能编译：防止再出现「关键源码只存在本地工作区」的交付事故。
+      # 依赖 backend/internal/web/dist/.gitkeep 作为 go:embed 的占位。
+      - name: 干净检出构建
+        run: |
+          git worktree add --detach /tmp/fp-clean HEAD
+          cd /tmp/fp-clean/backend
+          CGO_ENABLED=0 go build ./...

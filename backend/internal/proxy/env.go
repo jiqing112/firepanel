@@ -56,12 +56,12 @@ func ProbePort(port int, runner Runner) PortProbe {
 
 // EnvReport 反代运行环境报告（端口探测 + 推荐 + Caddy 探测）。
 type EnvReport struct {
-	HTTP         PortProbe `json:"http"`
-	HTTPS        PortProbe `json:"https"`
-	Engine       string    `json:"engine"`
-	ListenHTTP   string    `json:"listen_http"`
-	ListenHTTPS  string    `json:"listen_https"`
-	Recommended  struct {
+	HTTP        PortProbe `json:"http"`
+	HTTPS       PortProbe `json:"https"`
+	Engine      string    `json:"engine"`
+	ListenHTTP  string    `json:"listen_http"`
+	ListenHTTPS string    `json:"listen_https"`
+	Recommended struct {
 		HTTPPort  int    `json:"http_port"`
 		HTTPSPort int    `json:"https_port"`
 		Challenge string `json:"challenge"` // http-01 | tls-alpn-01 | dns-01

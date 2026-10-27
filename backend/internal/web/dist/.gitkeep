@@ -1,0 +1,2 @@
+# 占位文件：干净检出时 //go:embed all:dist 需要目录非空。
+# 实际前端产物由 scripts/build.sh 或 CI 复制到此目录。

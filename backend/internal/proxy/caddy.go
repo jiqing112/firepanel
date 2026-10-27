@@ -131,8 +131,8 @@ func BuildCaddyConfig(cfgs []DomainConfig, httpAddr, httpsAddr string) map[strin
 	cfg.Apps.HTTP.Servers = map[string]caddyServer{}
 	if len(httpRoutes) > 0 && httpAddr != "" {
 		cfg.Apps.HTTP.Servers["firepanel_http"] = caddyServer{
-			Listen:         []string{httpAddr},
-			Routes:         httpRoutes,
+			Listen: []string{httpAddr},
+			Routes: httpRoutes,
 			AutomaticHTTPS: &struct {
 				Disable bool `json:"disable"`
 			}{Disable: true},

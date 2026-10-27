@@ -8,7 +8,7 @@ import (
 
 // ListenPort 一条监听端口扫描结果（ss -tlnp / -ulnp 解析）。
 type ListenPort struct {
-	Proto   string `json:"proto"`   // tcp|udp
+	Proto   string `json:"proto"` // tcp|udp
 	Port    int    `json:"port"`
 	Address string `json:"address"` // 监听地址：0.0.0.0 / :: = 对外；127.0.0.1 / ::1 = 仅本机
 	Process string `json:"process"` // 进程名（无权限或已退出时为空）

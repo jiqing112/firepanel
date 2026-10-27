@@ -5,12 +5,14 @@
     desc,
     action,
     compact = false,
+    children,
   }: {
     icon?: import('svelte').Snippet;
     title: string;
     desc?: string;
     action?: import('svelte').Snippet;
     compact?: boolean;
+    children?: import('svelte').Snippet;
   } = $props();
 </script>
 
@@ -25,6 +27,9 @@
   <div class={compact ? 'text-sm font-medium' : 'text-[15px] font-medium'}>{title}</div>
   {#if desc}
     <p class="max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">{desc}</p>
+  {/if}
+  {#if children}
+    <div class="mt-1 w-full">{@render children()}</div>
   {/if}
   {#if action}
     <div class="mt-1.5">{@render action()}</div>

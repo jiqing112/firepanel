@@ -12,18 +12,18 @@ const (
 
 // Rule 一条与后端无关的防火墙规则。
 type Rule struct {
-	Tag     string `json:"tag"`      // fp:<rule_id>:<seq> / fp:sys:<seq>；用于命中映射与漂移对比
-	Chain   string `json:"chain"`    // input|forward|dstnat|srcnat
-	Family  string `json:"family"`   // ipv4|ipv6
-	Proto   string `json:"proto"`    // tcp|udp|""（任意）
-	Src     string `json:"src"`      // IP/CIDR，空=任意
-	Dst     string `json:"dst"`      // IP/CIDR，空=任意
-	DstPort string `json:"dst_port"` // "80" 或 "30000-30010"，空=任意
+	Tag      string `json:"tag"`       // fp:<rule_id>:<seq> / fp:sys:<seq>；用于命中映射与漂移对比
+	Chain    string `json:"chain"`     // input|forward|dstnat|srcnat
+	Family   string `json:"family"`    // ipv4|ipv6
+	Proto    string `json:"proto"`     // tcp|udp|""（任意）
+	Src      string `json:"src"`       // IP/CIDR，空=任意
+	Dst      string `json:"dst"`       // IP/CIDR，空=任意
+	DstPort  string `json:"dst_port"`  // "80" 或 "30000-30010"，空=任意
 	OutIface string `json:"out_iface"` // NAT 出口网卡
-	Action  string `json:"action"`   // accept|drop|dnat|snat|masquerade
-	To      string `json:"to"`       // dnat 目标 "ip:port"/"ip:port-port"/"ip"；snat 目标 "ip"
-	Comment string `json:"comment"`
-	Limit   *Limit `json:"limit,omitempty"`
+	Action   string `json:"action"`    // accept|drop|dnat|snat|masquerade
+	To       string `json:"to"`        // dnat 目标 "ip:port"/"ip:port-port"/"ip"；snat 目标 "ip"
+	Comment  string `json:"comment"`
+	Limit    *Limit `json:"limit,omitempty"`
 }
 
 // Limit 限速/限连参数（INPUT 链防 CC/扫描）。
@@ -75,8 +75,8 @@ type ForwardSpec struct {
 	Protocol   string `json:"protocol"` // tcp|udp|both
 	ListenPort string `json:"listen_port"`
 	SrcIP      string `json:"src_ip"`
-	DstIP      string `json:"dst_ip"`      // 已解析（域名目标由 reconciler 先做 DNS）
-	DstDomain  string `json:"dst_domain"`  // 原始域名（DstIP 为空时解析）
+	DstIP      string `json:"dst_ip"`     // 已解析（域名目标由 reconciler 先做 DNS）
+	DstDomain  string `json:"dst_domain"` // 原始域名（DstIP 为空时解析）
 	DstPort    string `json:"dst_port"`
 	Enabled    bool   `json:"enabled"`
 }
@@ -113,7 +113,7 @@ type Snapshot struct {
 type ChainView struct {
 	Name      string `json:"name"`
 	Exists    bool   `json:"exists"`
-	Hooked    bool   `json:"hooked"` // 是否已挂接到内置链
+	Hooked    bool   `json:"hooked"`    // 是否已挂接到内置链
 	Reference string `json:"reference"` // 挂接点描述，如 filter/INPUT
 }
 

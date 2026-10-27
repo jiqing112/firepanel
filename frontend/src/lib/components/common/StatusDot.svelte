@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Tooltip } from '$lib/components/ui/tooltip';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     state,

@@ -6,25 +6,32 @@
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
   import DangerDialog from '$lib/components/common/DangerDialog.svelte';
-  import { backend, type SyncResult } from '$lib/api';
+  import { backend, downloadFile, type SyncResult } from '$lib/api';
+  import { session } from '$lib/stores/session.svelte';
 
   let fileInput = $state<HTMLInputElement | null>(null);
   let restoring = $state(false);
   let danger = $state<{ sync: SyncResult } | null>(null);
 
-  function downloadBackup() {
-    const a = document.createElement('a');
-    a.href = `/api/v1/system/backup?format=json&t=${Date.now()}`;
-    a.download = 'firepanel-backup.json';
-    a.click();
-    toast.success('备份已开始下载');
+  // 备份导出为管理员操作（后端 /system/backup 已限管理员）
+  const isAdmin = $derived(session.user?.role === 'admin');
+
+  async function downloadBackup() {
+    try {
+      await downloadFile('/system/backup?format=json', 'firepanel-backup.json');
+      toast.success('备份已开始下载');
+    } catch (e) {
+      toast.error(e instanceof Error ? `下载失败: ${e.message}` : String(e));
+    }
   }
 
-  function exportKernel(format: 'iptables-save' | 'nft') {
-    const a = document.createElement('a');
-    a.href = `/api/v1/system/backup?format=${format}&t=${Date.now()}`;
-    a.download = '';
-    a.click();
+  async function exportKernel(format: 'iptables-save' | 'nft') {
+    const name = format === 'nft' ? 'firepanel-nft-ruleset.nft' : 'firepanel-iptables.v4';
+    try {
+      await downloadFile(`/system/backup?format=${format}`, name);
+    } catch (e) {
+      toast.error(e instanceof Error ? `导出失败: ${e.message}` : String(e));
+    }
   }
 
   async function onFileChosen(e: Event) {
@@ -64,18 +71,21 @@
       内核格式导出用于与 iptables-save / nft 工作流互通。
     </p>
     <div class="grid gap-2.5">
-      <Button variant="outline" class="justify-start" onclick={downloadBackup}>
+      <Button variant="outline" class="justify-start" onclick={downloadBackup} disabled={!isAdmin}>
         <FileJson size={15} class="text-primary" />
         面板期望状态（JSON）— 推荐
       </Button>
-      <Button variant="outline" class="justify-start" onclick={() => exportKernel('iptables-save')}>
+      <Button variant="outline" class="justify-start" onclick={() => exportKernel('iptables-save')} disabled={!isAdmin}>
         <FileCode size={15} class="text-info" />
         iptables-save 格式（iptables 后端）
       </Button>
-      <Button variant="outline" class="justify-start" onclick={() => exportKernel('nft')}>
+      <Button variant="outline" class="justify-start" onclick={() => exportKernel('nft')} disabled={!isAdmin}>
         <FileCode size={15} class="text-info" />
         nft ruleset 格式（nftables 后端）
       </Button>
+      {#if !isAdmin}
+        <p class="text-[11px] text-muted-foreground">备份导出需要管理员权限。</p>
+      {/if}
     </div>
   </Card>
 

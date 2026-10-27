@@ -28,7 +28,10 @@ func TestValidateJail(t *testing.T) {
 
 	// 内置「面板登录爆破防护」：audit 源 + 空正则 → 必须合法（回归）
 	audit := valid(func(j *store.JailConfig) {
-		j.Name = "panel"; j.SourceType = "audit"; j.Unit = ""; j.MatchRegex = ""
+		j.Name = "panel"
+		j.SourceType = "audit"
+		j.Unit = ""
+		j.MatchRegex = ""
 	})
 	if err := validateJail(audit); err != nil {
 		t.Fatalf("audit 源空正则应合法: %v", err)
@@ -42,8 +45,11 @@ func TestValidateJail(t *testing.T) {
 
 	// file 源非法正则
 	fileBad := valid(func(j *store.JailConfig) {
-		j.Name = "web"; j.SourceType = "file"; j.Unit = ""
-		j.LogPath = "/var/log/x.log"; j.MatchRegex = "([unclosed"
+		j.Name = "web"
+		j.SourceType = "file"
+		j.Unit = ""
+		j.LogPath = "/var/log/x.log"
+		j.MatchRegex = "([unclosed"
 	})
 	if err := validateJail(fileBad); err == nil {
 		t.Fatal("非法正则应报错")

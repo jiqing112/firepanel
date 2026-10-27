@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus, Globe, Trash2, Pencil, Server, MoreHorizontal, Radio, ScanSearch, KeyRound, FileCode2, Download, Copy, Check, ExternalLink } from '@lucide/svelte';
+  import { Plus, Globe, Trash2, Pencil, Server, MoreHorizontal, Radio, ScanSearch, KeyRound, FileCode2, Download, Copy, Check, ExternalLink, RefreshCw, TriangleAlert } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -11,7 +11,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
-  import { backend, onWSMessage, type ProxyDomain, type ProxyRoute, type ProxyEnv, type DNSProviderConfig, type CaddySiteOpts } from '$lib/api';
+  import { backend, ApiError, onWSMessage, type ProxyDomain, type ProxyRoute, type ProxyEnv, type DNSProviderConfig, type CaddySiteOpts, type ProxyDomainInput } from '$lib/api';
   import { fmtDateTime } from '$lib/utils';
 
   let items = $state<ProxyDomain[]>([]);
@@ -91,7 +91,7 @@
 
   function openEdit(d: ProxyDomain) {
     editingId = d.id;
-    dform = { domain: d.domain, tls_mode: d.tls_mode, challenge: d.challenge ?? '', cert_pem: '', key_pem: '', remark: d.remark, opts: parseOpts(d.caddy_opts) };
+    dform = { domain: d.domain, tls_mode: d.tls_mode, challenge: d.challenge ?? '', cert_pem: '', key_pem: '', remark: d.remark, upstream: '', opts: parseOpts(d.caddy_opts) };
     createOpen = true;
   }
 
@@ -122,7 +122,7 @@
     if (!dValid || submitting) return;
     submitting = true;
     try {
-      const payload: Record<string, unknown> = {
+      const payload: ProxyDomainInput & { domain: string } = {
         domain: dform.domain.trim().toLowerCase(),
         tls_mode: dform.tls_mode,
         challenge: dform.tls_mode === 'auto' ? dform.challenge : '',
@@ -240,23 +240,45 @@ handle_path /.well-known/acme-challenge/* {
   /* Caddy 一键安装 */
   let caddyInstalling = $state(false);
 
-  /* Caddyfile（完全接管，整文件编辑） */
+  /* Caddyfile：读取服务器真实文件，保存时只合并/追加并自动备份 */
   let cfOpen = $state(false);
-  let cfText = $state(''); // 服务器当前生效内容
+  let cfTab = $state<'current' | 'generated'>('current');
+  let cfCurrent = $state(''); // 服务器上的实际内容（编辑器基线）
+  let cfGenerated = $state(''); // 面板生成预览（托管段）
   let cfEdit = $state(''); // 编辑器内容
   let cfPath = $state('/etc/caddy/Caddyfile');
+  let cfExists = $state(false);
+  let cfManaged = $state(false);
+  let cfLegacy = $state(false);
+  let cfHash = $state('');
+  let cfReadError = $state('');
+  let cfConflict = $state(false);
   let cfLoading = $state(false);
   let cfSaving = $state(false);
-  const cfDirty = $derived(cfEdit !== cfText);
+  // 文件尚不存在时，编辑器里的草稿即为待创建内容，允许直接保存
+  const cfDirty = $derived(cfEdit !== cfCurrent || (!cfExists && cfEdit.trim() !== ''));
 
   async function openCaddyfile() {
     cfOpen = true;
+    await reloadCaddyfile();
+  }
+
+  async function reloadCaddyfile() {
     cfLoading = true;
     try {
       const cf = await backend.caddyfile();
-      cfText = cf.caddyfile;
-      cfEdit = cf.caddyfile;
       cfPath = cf.path;
+      cfExists = cf.exists;
+      cfManaged = cf.managed;
+      cfLegacy = cf.legacy;
+      cfHash = cf.hash;
+      cfReadError = cf.read_error ?? '';
+      cfGenerated = cf.generated;
+      // 文件存在就编辑真实内容；不存在才用待创建的托管段作草稿
+      cfCurrent = cf.exists ? cf.current : cf.generated;
+      cfEdit = cfCurrent;
+      cfTab = 'current';
+      cfConflict = false;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -268,14 +290,42 @@ handle_path /.well-known/acme-challenge/* {
     if (!cfDirty || cfSaving) return;
     cfSaving = true;
     try {
-      await backend.saveCaddyfile(cfEdit);
-      cfText = cfEdit;
-      toast.success('Caddyfile 已保存并重载');
+      const r = await backend.saveCaddyfile(cfEdit, cfHash);
+      cfCurrent = cfEdit;
+      cfHash = r.hash;
+      cfExists = true;
+      cfConflict = false;
+      toast.success('Caddyfile 已保存并重载', {
+        description: r.backup ? `原文件已备份到 ${r.backup}` : '语法校验通过，配置已生效',
+      });
+      await reloadCaddyfile();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      if (e instanceof ApiError && e.status === 409) {
+        cfConflict = true;
+        toast.error('服务器文件已被修改，已取消保存', {
+          description: '为避免覆盖别处的改动，请先「重新读取」，再把你的修改合并进去',
+        });
+      } else {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       cfSaving = false;
     }
+  }
+
+  /** 把面板生成内容追加到文件末尾：保留现有内容，只做追加。 */
+  function appendGenerated() {
+    if (!cfGenerated) return;
+    if (cfManaged) {
+      toast.error('文件里已经有面板托管段，无需再追加', {
+        description: '在面板增删域名时，面板会自动替换托管段内的内容',
+      });
+      return;
+    }
+    const base = cfEdit.replace(/\s+$/, '');
+    cfEdit = `${base ? `${base}\n\n` : ''}${cfGenerated}`;
+    cfTab = 'current';
+    toast.success('已追加到编辑区末尾', { description: '现有内容原样保留；保存前请确认站点地址没有重复' });
   }
 
   function downloadCaddyfile() {
@@ -385,7 +435,7 @@ handle_path /.well-known/acme-challenge/* {
     </Badge>
     <span class="ml-auto"></span>
     {#if env?.engine === 'caddy'}
-      <Button variant="outline" onclick={openCaddyfile}>
+      <Button variant="outline" onclick={openCaddyfile} title="读取并编辑服务器上的 Caddyfile；保存前自动备份，只合并托管段或追加，不会整盘覆盖">
         <FileCode2 size={14} />
         Caddyfile
       </Button>
@@ -918,32 +968,85 @@ handle_path /.well-known/acme-challenge/* {
   </Dialog.Content>
 </Dialog.Root>
 
-<!-- Caddyfile 管理：直接编辑完整文件，保存时校验语法并自动重载 -->
+<!-- Caddyfile 管理：读取服务器真实文件；保存只合并托管段/追加，并自动备份 -->
 <Dialog.Root bind:open={cfOpen}>
-  <Dialog.Content class="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+  <Dialog.Content class="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2">
         <FileCode2 size={15} class="text-primary" />
-        编辑 Caddyfile
+        Caddyfile
         <Badge variant="outline" class="ml-1 bg-muted font-mono text-[10px] font-normal text-muted-foreground ring-border">{cfPath}</Badge>
       </Dialog.Title>
-      <Dialog.Description>直接修改完整文件，保存时自动校验语法并重载 Caddy（约 2 秒生效）。</Dialog.Description>
+      <Dialog.Description>
+        这里显示服务器上<span class="font-medium text-foreground">实际的配置文件</span>；保存时先语法校验、再自动备份，最后才写入并重载。
+      </Dialog.Description>
     </Dialog.Header>
 
-    <!-- 管理范围说明 -->
+    <!-- 文件状态：明确「谁会动哪部分」 -->
     <div class="rounded-lg border border-info/30 bg-info/[0.05] px-3.5 py-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
-      <p><span class="font-medium text-foreground">谁管理哪部分：</span>
-        每个域名的站点块由面板根据「添加域名」自动生成——在面板增删域名会重写这些块；
-        <span class="font-medium text-foreground">{'{ }'}</span> 全局块里的
-        <code class="rounded bg-foreground/[0.06] px-1 font-mono">email</code>
-        行是证书通知邮箱，直接改这里即可。</p>
-      <p class="mt-1"><span class="font-medium text-foreground">「# ==== 自定义配置 ====」</span>
-        注释以下的内容<span class="font-medium text-foreground">永远不会被面板修改</span>——反向代理之外的站点、snippets 都写在那里。</p>
+      <p class="flex flex-wrap items-center gap-1.5">
+        <span class="font-medium text-foreground">当前状态：</span>
+        {#if cfReadError}
+          <Badge variant="outline" class="border-destructive/40 bg-destructive/10 text-[10px] text-destructive ring-destructive/20">读取失败</Badge>
+          <span>无法读取 {cfPath}（{cfReadError}），保存将被拒绝，以免盲目覆盖。</span>
+        {:else if !cfExists}
+          <Badge variant="outline" class="text-[10px]">文件不存在</Badge>
+          <span>保存将创建该文件，写入下方内容。</span>
+        {:else if cfManaged}
+          <Badge variant="outline" class="border-success/40 bg-success/10 text-[10px] text-success ring-success/20">面板托管段</Badge>
+          <span>面板增删域名时只替换 managed begin / managed end 之间的内容，其余部分原样保留。</span>
+        {:else if cfLegacy}
+          <Badge variant="outline" class="border-warning/40 bg-warning/10 text-[10px] text-warning ring-warning/20">旧版生成物</Badge>
+          <span>下次下发会迁移为托管段格式；原文件会备份为 {cfPath}.fp-orig 与 .bak-时间戳。</span>
+        {:else}
+          <Badge variant="outline" class="text-[10px]">已有第三方配置</Badge>
+          <span>面板只会把托管段<span class="font-medium text-foreground">追加</span>到文件末尾，你现有的站点与 snippets 不会被改写。</span>
+        {/if}
+      </p>
+      <p class="mt-1">
+        保存前自动备份到 <code class="rounded bg-foreground/[0.06] px-1 font-mono">{cfPath}.bak-时间戳</code>
+        （首次另存 <code class="rounded bg-foreground/[0.06] px-1 font-mono">.fp-orig</code>，保留最近 10 份备份）；
+        校验不通过则完全不落盘。
+      </p>
+    </div>
+
+    <!-- 视图切换：服务器实际文件 / 面板生成预览 -->
+    <div class="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onclick={() => (cfTab = 'current')}
+        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {cfTab === 'current' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
+      >服务器实际文件</button>
+      <button
+        type="button"
+        onclick={() => (cfTab = 'generated')}
+        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {cfTab === 'generated' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
+      >面板生成预览</button>
+      <Button size="sm" variant="ghost" class="h-7 text-[11.5px]" disabled={cfLoading} onclick={reloadCaddyfile}>
+        <RefreshCw size={12} class="mr-1" /> 重新读取
+      </Button>
     </div>
 
     {#if cfLoading}
       <div class="h-72 animate-pulse rounded-lg bg-foreground/[0.04]"></div>
+    {:else if cfTab === 'generated'}
+      <div class="space-y-2">
+        <pre class="h-80 overflow-auto rounded-lg border border-border/60 bg-foreground/[0.03] p-3.5 font-mono text-[11.5px] leading-relaxed">{cfGenerated}</pre>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button size="sm" class="h-8 text-[12px]" onclick={appendGenerated}>追加到编辑区末尾</Button>
+          <Button size="sm" variant="outline" class="h-8 text-[12px]" onclick={() => { navigator.clipboard.writeText(cfGenerated); toast.success('已复制到剪贴板'); }}>复制</Button>
+          <span class="text-[10.5px] text-muted-foreground">
+            只追加，不替换——文件里已有的内容会全部保留
+          </span>
+        </div>
+      </div>
     {:else}
+      {#if cfConflict}
+        <div class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[11.5px] text-destructive">
+          <TriangleAlert size={13} class="mt-0.5 shrink-0" />
+          <span>服务器文件在你编辑期间已被改动，保存已取消。请点「重新读取」拿到最新内容，再把你的修改补进去（当前编辑区内容不会被自动丢弃）。</span>
+        </div>
+      {/if}
       <textarea
         class="h-96 w-full resize-none rounded-lg border border-input bg-card p-3.5 font-mono text-[12px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/40"
         spellcheck="false"
@@ -951,15 +1054,15 @@ handle_path /.well-known/acme-challenge/* {
       ></textarea>
 
       <div class="flex flex-wrap items-center gap-2">
-        <Button size="sm" class="h-8 text-[12px]" disabled={!cfDirty || cfSaving} onclick={saveCaddyfileEdit}>
+        <Button size="sm" class="h-8 text-[12px]" disabled={!cfDirty || cfSaving || !!cfReadError} onclick={saveCaddyfileEdit}>
           {cfSaving ? '校验并保存中…' : cfDirty ? '保存并重载' : '已保存'}
         </Button>
-        <Button size="sm" variant="outline" class="h-8 text-[12px]" disabled={!cfDirty} onclick={() => (cfEdit = cfText)} title="放弃手改，回到面板生成的版本">
-          恢复面板生成版本
+        <Button size="sm" variant="outline" class="h-8 text-[12px]" disabled={!cfDirty} onclick={() => (cfEdit = cfCurrent)} title="放弃手改，回到服务器上的内容">
+          还原修改
         </Button>
         <span class="text-[10.5px] text-muted-foreground">
           {#if cfDirty}有未保存修改{:else}与服务器一致{/if}
-          · 语法错误会在保存时提示且不生效
+          · 语法错误会在保存时提示，且不会写入文件
         </span>
       </div>
     {/if}

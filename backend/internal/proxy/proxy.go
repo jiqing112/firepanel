@@ -37,8 +37,8 @@ type DomainConfig struct {
 	ID         int64         `json:"id"`
 	Domain     string        `json:"domain"`
 	Enabled    bool          `json:"enabled"`
-	TLSMode    string        `json:"tls_mode"`  // auto|manual|none
-	Challenge  string        `json:"challenge"` // ""=auto | http | alpn | dns（仅 auto 生效）
+	TLSMode    string        `json:"tls_mode"`   // auto|manual|none
+	Challenge  string        `json:"challenge"`  // ""=auto | http | alpn | dns（仅 auto 生效）
 	CaddyOpts  string        `json:"caddy_opts"` // Caddy 站点选项 JSON：encode/security_headers/log_access
 	CertPEM    string        `json:"-"`
 	KeyPEM     string        `json:"-"`
@@ -78,7 +78,9 @@ type Manager struct {
 	// OnCertStatus 证书申请结果回写（app 层更新数据库 cert_status/cert_error）
 	OnCertStatus func(domainID int64, status, errMsg string)
 
-	mu      sync.Mutex
+	// mu 保护运行态。读多写少（每个请求都要查域名/路由），用 RWMutex：
+	// 之前所有代理请求都走互斥锁，高并发下会被串行化。
+	mu      sync.RWMutex
 	domains map[string]*domain // key: 小写域名
 
 	// 证书配置按挑战分组：auto（HTTP+ALPN）/ http / alpn / dns / ip（shortlived）
@@ -87,10 +89,10 @@ type Manager struct {
 	nameGroup map[string]string            // 已管理证书名 -> group（续期路由用）
 	managed   map[string]string            // 已管理域名 -> group
 
-	dnsCfg DNSProviderConfig // DNS-01 凭据（可能运行中更新，需重建 dns 组）
-	runner Runner            // 系统命令执行器（Caddyfile 接管部署用；nil=走 Admin API）
+	dnsCfg      DNSProviderConfig   // DNS-01 凭据（可能运行中更新，需重建 dns 组）
+	runner      Runner              // 系统命令执行器（Caddyfile 接管部署用；nil=走 Admin API）
 	caddyGlobal CaddyGlobalSettings // Caddyfile 全局选项
-	caddyCustom  string              // 用户自定义片段（原样追加，重新生成不丢失）
+	caddyCustom string              // 用户自定义片段（原样追加，重新生成不丢失）
 
 	httpSrv  *http.Server
 	httpsSrv *http.Server
@@ -98,7 +100,11 @@ type Manager struct {
 }
 
 // SetRunner 注入命令执行器（启用 Caddyfile 完全接管部署）。
-func (m *Manager) SetRunner(r Runner) { m.runner = r }
+func (m *Manager) SetRunner(r Runner) {
+	m.mu.Lock()
+	m.runner = r
+	m.mu.Unlock()
+}
 
 // SetCaddyCustom 更新用户自定义片段并热重载配置。
 func (m *Manager) SetCaddyCustom(custom string) {
@@ -109,16 +115,24 @@ func (m *Manager) SetCaddyCustom(custom string) {
 
 // CaddyCustom 当前自定义片段。
 func (m *Manager) CaddyCustom() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.caddyCustom
 }
 
 // SetCaddyGlobal 更新 Caddyfile 全局选项（email/debug）。
-func (m *Manager) SetCaddyGlobal(g CaddyGlobalSettings) { m.caddyGlobal = g }
+func (m *Manager) SetCaddyGlobal(g CaddyGlobalSettings) {
+	m.mu.Lock()
+	m.caddyGlobal = g
+	m.mu.Unlock()
+}
 
 // CaddyGlobal 当前全局选项。
-func (m *Manager) CaddyGlobal() CaddyGlobalSettings { return m.caddyGlobal }
+func (m *Manager) CaddyGlobal() CaddyGlobalSettings {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.caddyGlobal
+}
 
 // 证书配置分组名。
 const (
@@ -154,7 +168,11 @@ func NewManager(log *slog.Logger, opts Options) *Manager {
 }
 
 // Mode 当前反代模式。
-func (m *Manager) Mode() string { return m.mode }
+func (m *Manager) Mode() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.mode
+}
 
 // Reconfigure 运行中切换引擎与监听端口（UI「运行环境」用）。
 // builtin 监听中的端口立即释放，由随后的 Reload 在新地址上重建；
@@ -319,19 +337,26 @@ func (m *Manager) Reload(ctx context.Context, cfgs []DomainConfig) error {
 			m.onCertStatus(pc.domainID, "ok", "")
 		}
 	case ModeCaddy:
-		// 完全接管：生成完整 Caddyfile → validate → 写 /etc/caddy/Caddyfile → reload。
+		// 面板只维护「托管段」：读取服务器实际 Caddyfile → 合并托管段 → validate →
+		// 备份 → 写入 → reload。托管段之外的内容（用户自有站点/snippets）不会被覆盖。
 		// 全局设置由 app 层经 SetCaddyGlobal 注入；runner 经 SetRunner 注入。
 		if m.runner != nil {
 			m.mu.Lock()
-			cf := BuildCaddyfile(cfgs, m.caddyGlobal, m.caddyCustom)
+			g := m.caddyGlobal
+			custom := m.caddyCustom
 			m.mu.Unlock()
 			ctxDeploy, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
-			if err := m.DeployCaddyfile(ctxDeploy, m.runner, cf); err != nil {
-				m.emit("proxy_caddy_error", "Caddyfile 下发失败", err.Error())
+			res, err := m.DeployGenerated(ctxDeploy, cfgs, g, custom)
+			if err != nil {
+				m.emit("proxy_caddy_error", "Caddyfile 下发失败（原文件未改动）", err.Error())
 				return err
 			}
-			m.emit("proxy_caddy_ok", "Caddyfile 已写入并重载", fmt.Sprintf("%d 个域名", len(next)))
+			detail := fmt.Sprintf("%d 个域名 · %s", len(next), res.Mode.Label())
+			if res.Backup != "" {
+				detail += " · 备份 " + res.Backup
+			}
+			m.emit("proxy_caddy_ok", "Caddyfile 已合并写入并重载", detail)
 		} else {
 			// 无 runner（测试/嵌入）：走 Admin API JSON
 			body := BuildCaddyConfig(cfgs, m.httpAddr, m.httpsAddr)
@@ -634,8 +659,8 @@ func isNonPublicIP(name string) bool {
 // 空 SNI（客户端按 IP 直连，RFC 6066 不发送 SNI）时回落到已管理的 IP 证书。
 func (m *Manager) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	name := strings.ToLower(hello.ServerName)
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if d := m.domains[name]; d != nil && d.cert != nil {
 		return d.cert, nil
 	}
@@ -676,8 +701,8 @@ func (m *Manager) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 
 // CertExpiry 查询证书到期时间（手动证书 / certmagic 缓存与存储）。
 func (m *Manager) CertExpiry(domainName string) (time.Time, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	name := strings.ToLower(domainName)
 	if d := m.domains[name]; d != nil && d.cert != nil {
 		return leafNotAfter(d.cert)
@@ -712,7 +737,7 @@ func leafNotAfter(c *tls.Certificate) (time.Time, bool) {
 // ServeHTTP 域名 + 最长路径前缀路由。
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := strings.ToLower(strings.SplitN(r.Host, ":", 2)[0])
-	m.mu.Lock()
+	m.mu.RLock()
 	d := m.domains[host]
 	var route *routeEntry
 	if d != nil {
@@ -725,7 +750,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	if d == nil || route == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -750,8 +775,8 @@ func normalizePathMatch(p string) string {
 
 // HealthTargets 返回当前需要探测的路由清单。
 func (m *Manager) HealthTargets() []HealthTarget {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var out []HealthTarget
 	for _, d := range m.domains {
 		for _, re := range d.routes {
@@ -796,8 +821,8 @@ func (t HealthTarget) Probe(timeout time.Duration) HealthResult {
 
 // Running 是否已就绪（builtin=本地监听已启动；caddy=Admin API 可达）。
 func (m *Manager) Running() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.mode == ModeCaddy {
 		if len(m.domains) == 0 {
 			return false

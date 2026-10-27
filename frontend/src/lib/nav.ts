@@ -13,13 +13,16 @@ import {
   Settings,
   EthernetPort,
   Waves,
-  type Icon,
 } from '@lucide/svelte';
+import type { Component } from 'svelte';
+
+/** 侧栏图标组件类型（lucide-svelte 图标接受 size/strokeWidth/class 等 props）。 */
+export type NavIcon = Component<{ size?: number | string; strokeWidth?: number | string; class?: string }>;
 
 export interface NavItem {
   path: string;
   labelKey: string;
-  icon: typeof Icon;
+  icon: NavIcon;
   /** 所属交付阶段，用于原型阶段的标签展示 */
   phase?: 2 | 3 | 4 | 5;
 }

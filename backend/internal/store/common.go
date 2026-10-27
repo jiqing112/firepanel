@@ -75,6 +75,22 @@ func (s *Store) GetUserByName(username string) (*User, error) {
 	return u, nil
 }
 
+// GetUserByID 按 ID 查询用户（鉴权中间件校验账号有效性/角色用）。
+func (s *Store) GetUserByID(id int64) (*User, error) {
+	u := &User{}
+	var created sql.NullString
+	err := s.db.QueryRow(`SELECT id,username,pass_hash,role,created_at FROM users WHERE id=?`, id).
+		Scan(&u.ID, &u.Username, &u.PassHash, &u.Role, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	u.CreatedAt = nz(created)
+	return u, nil
+}
+
 func (s *Store) ListUsers() ([]User, error) {
 	rows, err := s.db.Query(`SELECT id,username,pass_hash,role,created_at FROM users ORDER BY id`)
 	if err != nil {
@@ -141,16 +157,16 @@ func (s *Store) DeleteSetting(key string) error {
 /* ------------------------- 审计日志 ------------------------- */
 
 type AuditEntry struct {
-	ID          int64     `json:"id"`
-	UserID      int64     `json:"user_id"`
-	Username    string    `json:"username"`
-	Action      string    `json:"action"`
-	Target      string    `json:"target"`
-	BeforeJSON  string    `json:"-"`
-	AfterJSON   string    `json:"-"`
-	Detail      string    `json:"detail"`
-	IP          string    `json:"ip"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	UserID     int64     `json:"user_id"`
+	Username   string    `json:"username"`
+	Action     string    `json:"action"`
+	Target     string    `json:"target"`
+	BeforeJSON string    `json:"-"`
+	AfterJSON  string    `json:"-"`
+	Detail     string    `json:"detail"`
+	IP         string    `json:"ip"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func (s *Store) AddAudit(e *AuditEntry) error {

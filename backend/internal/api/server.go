@@ -1,4 +1,5 @@
 // Package api：REST API 与静态资源服务。
+// 安全约定：写接口一律 requireAdmin；会话以数据库为准。
 package api
 
 import (
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +28,13 @@ type Server struct {
 
 	// Caddy 一键安装并发守卫
 	caddyInstalling atomic.Bool
+
+	// JWT 签名密钥（进程内缓存，避免每请求读库/读库失败导致密钥漂移）
+	jwtMu          sync.Mutex
+	jwtSecretBytes []byte
+
+	// 首次初始化串行化（防止并发 POST /setup 创建出两个管理员）
+	setupMu sync.Mutex
 }
 
 func NewServer(a *app.App, log *slog.Logger) *Server {
@@ -37,6 +46,13 @@ func NewServer(a *app.App, log *slog.Logger) *Server {
 
 	s := &Server{App: a, Log: log, Engine: r, WS: NewHub()}
 	a.Broadcast = s.broadcast
+
+	// 只信任本机/显式配置的反向代理。Gin 默认信任所有来源，
+	// 客户端可伪造 X-Forwarded-For 绕过登录限速并污染审计 IP。
+	if err := r.SetTrustedProxies(a.Cfg.Server.TrustedProxies); err != nil {
+		log.Warn("可信代理配置无效，已回退为不信任任何代理", "err", err, "proxies", a.Cfg.Server.TrustedProxies)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	s.registerRoutes()
 	return s
@@ -53,17 +69,33 @@ func (s *Server) registerRoutes() {
 	// 凭据每次请求从 App 原子状态读取：设置页可运行中开关，无需重启。
 	r.Use(s.basicAuthMiddleware())
 
-	// CORS（面板同源部署，宽松策略仅针对开发场景）
+	// 安全响应头：面板不加载外部资源，用较严格的 CSP；
+	// style 需要 unsafe-inline（Svelte 组件内联样式与 Tailwind 运行时）。
 	r.Use(func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		c.Header("Content-Security-Policy",
+			"default-src 'self'; img-src 'self' data:; font-src 'self' data:; "+
+				"style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; "+
+				"frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		c.Next()
+	})
+
+	// 请求体上限：所有 JSON 接口共用（导入/恢复另有大额上限的专用路径）。
+	r.Use(func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<20)
+		}
 		c.Next()
 	})
 
 	api := r.Group("/api/v1")
 	api.GET("/bootstrap", s.Bootstrap) // 公开：初始化状态检测
-	api.POST("/setup", s.Setup)
-	api.POST("/auth/login", s.rateLimitLogin(), s.Login)
+	api.POST("/setup", s.SetupSecure)
+	api.POST("/auth/login", s.LoginSecure)
 
 	auth := api.Group("", s.requireAuth())
 	auth.GET("/me", s.Me)
@@ -93,9 +125,9 @@ func (s *Server) registerRoutes() {
 	auth.POST("/system/danger/cancel", s.requireAdmin(), s.CancelDanger)
 	auth.GET("/system/interfaces", s.ListInterfaces)
 	auth.POST("/system/ip-forward/enable", s.requireAdmin(), s.EnableIPForward)
-	auth.GET("/system/backup", s.Backup)
-	auth.POST("/system/restore", s.requireAdmin(), s.Restore)
-	auth.GET("/settings/basicauth", s.GetBasicAuth)
+	auth.GET("/system/backup", s.requireAdmin(), s.BackupBundle)
+	auth.POST("/system/restore", s.requireAdmin(), s.RestoreBundle)
+	auth.GET("/settings/basicauth", s.requireAdmin(), s.GetBasicAuth)
 	auth.POST("/settings/basicauth", s.requireAdmin(), s.SetBasicAuth)
 	auth.GET("/settings/ports", s.GetPanelPorts)
 	auth.POST("/settings/ports", s.requireAdmin(), s.SetPanelPorts)
@@ -110,7 +142,7 @@ func (s *Server) registerRoutes() {
 	auth.GET("/audit", s.ListAudit)
 	auth.POST("/audit/search", s.requireAdmin(), s.ListAuditFiltered)
 	auth.GET("/users", s.ListUsers)
-	auth.POST("/users", s.requireAdmin(), s.CreateUser)
+	auth.POST("/users", s.requireAdmin(), s.CreateUserSecure)
 	auth.DELETE("/users/:id", s.requireAdmin(), s.DeleteUser)
 
 	// 反向代理

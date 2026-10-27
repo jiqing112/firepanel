@@ -343,7 +343,7 @@ func TestDangerDelta(t *testing.T) {
 	}
 	// 新状态 = 基线 + 一个普通限速 → 增量不含 SSH → 不高危
 	st := &DesiredState{
-		Forwards: []ForwardSpec{{ID: 2, Protocol: "tcp", ListenPort: "12022", DstIP: "192.168.218.150", DstPort: "22", Enabled: true}},
+		Forwards:   []ForwardSpec{{ID: 2, Protocol: "tcp", ListenPort: "12022", DstIP: "192.168.218.150", DstPort: "22", Enabled: true}},
 		RateLimits: []RateLimitSpec{{ID: 1, Name: "web", Proto: "tcp", Port: "80", PerSrc: true, Rate: 30, RateUnit: "minute", Burst: 5, Enabled: true}},
 	}
 	res, err := rc.Sync(context.Background(), st, "192.168.218.1")

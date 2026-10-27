@@ -1,0 +1,81 @@
+package fw
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+// TestNftRateLimitWithoutPort 全端口限速（有协议、无端口）不能生成非法 nft 语法。
+func TestNftRateLimitWithoutPort(t *testing.T) {
+	rules := BuildRules(&DesiredState{
+		RateLimits: []RateLimitSpec{
+			{ID: 1, Name: "all-tcp", Proto: "tcp", Port: "", PerSrc: true, Rate: 10, RateUnit: "second", Enabled: true},
+		},
+	})
+	if len(rules) != 1 {
+		t.Fatalf("期望 1 条规则，得到 %d", len(rules))
+	}
+	line := renderNftRule(rules[0])
+	if strings.Contains(line, "tcp dport  ") || strings.HasSuffix(strings.TrimSpace(line), "dport") {
+		t.Fatalf("无端口时不应渲染 dport: %q", line)
+	}
+	if !strings.Contains(line, "meta l4proto tcp") {
+		t.Fatalf("无端口时应按协议匹配（meta l4proto）: %q", line)
+	}
+
+	// 有端口时仍使用 tcp dport
+	rules2 := BuildRules(&DesiredState{
+		RateLimits: []RateLimitSpec{
+			{ID: 1, Name: "http", Proto: "tcp", Port: "80", PerSrc: true, Rate: 10, RateUnit: "second", Enabled: true},
+		},
+	})
+	if line := renderNftRule(rules2[0]); !strings.Contains(line, "tcp dport 80") {
+		t.Fatalf("有端口时应渲染 tcp dport: %q", line)
+	}
+}
+
+// TestParseIPTablesSaveCounters 校验 iptables-save -c 的 "[pkts:bytes] " 前缀解析。
+func TestParseIPTablesSaveCounters(t *testing.T) {
+	out := `*filter
+:INPUT ACCEPT [0:0]
+:FPANEL_INPUT - [0:0]
+-A INPUT -j FPANEL_INPUT
+[123:4567] -A FPANEL_INPUT -s 203.0.113.9/32 -m comment --comment "fp:bl:3:1" -j DROP
+[1:64] -A FPANEL_INPUT -s 192.168.1.0/24 -m comment --comment "fp:wl:2:1" -j ACCEPT
+COMMIT`
+	rules := parseIPTablesSave(out, "ipv4")
+	if len(rules) != 2 {
+		t.Fatalf("应解析出 2 条面板规则，得到 %d: %+v", len(rules), rules)
+	}
+	if rules[0].Tag != "fp:bl:3:1" || rules[0].Counter.Packets != 123 || rules[0].Counter.Bytes != 4567 {
+		t.Fatalf("前缀计数解析失败: %+v", rules[0])
+	}
+	if rules[0].Spec != "-s 203.0.113.9/32 -j DROP" {
+		t.Fatalf("Spec 规范化失败: %q", rules[0].Spec)
+	}
+	if rules[1].Counter.Packets != 1 || rules[1].Counter.Bytes != 64 {
+		t.Fatalf("第二条计数解析失败: %+v", rules[1])
+	}
+	// 带 -c 前缀时仍能识别挂接
+	if !existsJump(out, "INPUT", "FPANEL_INPUT") {
+		t.Fatal("带计数前缀时应识别 INPUT → FPANEL_INPUT 挂接")
+	}
+}
+
+// TestIPTablesApplySkipsMissingIPv6 校验 ip6tables 不可用时只维护 IPv4（不整体失败）。
+func TestIPTablesApplySkipsMissingIPv6(t *testing.T) {
+	exec := NewFakeExecutor()
+	b := NewIPTablesBackend(exec)
+	// 模拟 ip6tables 缺失：FakeExecutor 默认都"存在"，这里直接构造未 Init 的实例
+	if err := b.Apply(context.Background(), BuildRules(&DesiredState{
+		Forwards: []ForwardSpec{{ID: 1, Protocol: "tcp", ListenPort: "80", DstIP: "192.168.1.5", DstPort: "8080", Enabled: true}},
+	})); err != nil {
+		t.Fatalf("Apply 失败: %v", err)
+	}
+	for _, call := range exec.Calls {
+		if strings.HasPrefix(call, "ip6tables-restore") {
+			t.Fatalf("未启用 IPv6 时不应调用 ip6tables-restore: %s", call)
+		}
+	}
+}

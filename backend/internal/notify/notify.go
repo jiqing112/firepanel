@@ -3,9 +3,11 @@ package notify
 
 import (
 	"bytes"
-	"io"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strconv"
@@ -54,11 +56,11 @@ func (e Event) format() string {
 
 // Notifier 多渠道通知器。
 type Notifier struct {
-	mu       sync.RWMutex
-	tg       *TelegramConfig
-	webhook  *WebhookConfig
-	smtp     *SMTPConfig
-	client   *http.Client
+	mu      sync.RWMutex
+	tg      *TelegramConfig
+	webhook *WebhookConfig
+	smtp    *SMTPConfig
+	client  *http.Client
 }
 
 func New() *Notifier {
@@ -158,21 +160,33 @@ func (n *Notifier) sendWebhook(cfg *WebhookConfig, ev Event) error {
 	return nil
 }
 
+// sendSMTP 发送邮件：UseTLS=true 走隐式 TLS（通常 465），否则先尝试 STARTTLS（587）。
+// 旧实现用 smtp.SendMail，UseTLS 字段被静默忽略 —— 465 端口永远发不出去。
 func (n *Notifier) sendSMTP(cfg *SMTPConfig, ev Event) error {
 	if cfg.Host == "" || cfg.To == "" {
 		return nil
 	}
 	port := cfg.Port
 	if port == 0 {
-		port = 587
+		if cfg.UseTLS {
+			port = 465
+		} else {
+			port = 587
+		}
 	}
-	addr := cfg.Host + ":" + strconv.Itoa(port)
+	toList := []string{}
+	for _, to := range strings.Split(cfg.To, ",") {
+		if to = strings.TrimSpace(to); to != "" {
+			toList = append(toList, to)
+		}
+	}
+	if len(toList) == 0 {
+		return nil
+	}
 	from := cfg.From
 	if from == "" {
 		from = cfg.Username
 	}
-	toList := strings.Split(cfg.To, ",")
-
 	subject := "FirePanel 告警: " + ev.Type
 	msg := strings.Join([]string{
 		"From: " + from,
@@ -184,11 +198,58 @@ func (n *Notifier) sendSMTP(cfg *SMTPConfig, ev Event) error {
 		ev.format(),
 	}, "\r\n")
 
-	var auth smtp.Auth
-	if cfg.Username != "" {
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(port))
+	tlsCfg := &tls.Config{ServerName: cfg.Host}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+
+	var conn net.Conn
+	var err error
+	if cfg.UseTLS {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
 	}
-	return smtp.SendMail(addr, auth, from, toList, []byte(msg))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	c, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if !cfg.UseTLS {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(tlsCfg); err != nil {
+				return fmt.Errorf("STARTTLS 失败: %w", err)
+			}
+		}
+	}
+	if cfg.Username != "" {
+		if err := c.Auth(smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)); err != nil {
+			return fmt.Errorf("SMTP 认证失败: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, to := range toList {
+		if err := c.Rcpt(to); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(msg)); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
 func base64Of(s string) string {

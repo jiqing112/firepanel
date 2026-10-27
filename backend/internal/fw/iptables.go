@@ -10,14 +10,29 @@ import (
 )
 
 // IPTablesBackend 基于 iptables-restore / iptables-save 的后端实现。
-// 同时兼容 iptables-legacy 与 iptables-nft 兼容层；ip6tables 同步维护。
+// 同时兼容 iptables-legacy 与 iptables-nft 兼容层；ip6tables 可用时同步维护。
 type IPTablesBackend struct {
 	exec Executor
+	// ipv6 表示本机 ip6tables 实际可用（Init 时探测）。
+	// 缺失时只管理 IPv4：否则每次 Apply 都会因 ip6tables-restore 不存在而整体失败，
+	// 面板在纯 IPv4 的最小化系统上会彻底不可用。
+	ipv6 bool
 }
 
 func NewIPTablesBackend(e Executor) *IPTablesBackend { return &IPTablesBackend{exec: e} }
 
 func (b *IPTablesBackend) Name() string { return BackendIPTables }
+
+// IPv6Enabled ip6tables 是否可用（供启动日志说明）。
+func (b *IPTablesBackend) IPv6Enabled() bool { return b.ipv6 }
+
+// families 需要维护的地址族。
+func (b *IPTablesBackend) families() []string {
+	if b.ipv6 {
+		return []string{"ipv4", "ipv6"}
+	}
+	return []string{"ipv4"}
+}
 
 // 面板自有链
 var iptChains = map[string]struct{ table, chain, hook string }{
@@ -57,21 +72,39 @@ func (b *IPTablesBackend) Available(ctx context.Context) error {
 }
 
 // Init 创建面板链并挂接到内置链（幂等，仅启动时执行）。
+// IPv6 属于「尽力而为」：ip6tables 或其内核表不可用时只记关闭 IPv6，
+// 不能让面板因 IPv6 环境缺失而无法启动。
 func (b *IPTablesBackend) Init(ctx context.Context) error {
-	for _, family := range []string{"ipv4", "ipv6"} {
-		for _, c := range iptChains {
-			// 建链（已存在会报错，忽略）
-			_, _ = b.exec.Run(ctx, b.binFor(family), "-t", c.table, "-N", c.chain)
-			// 挂接：-C 检查存在，不存在则 -I 到内置链最前
-			exists, err := b.checkJump(ctx, family, c)
-			if err != nil {
-				return fmt.Errorf("检查挂接 %s: %w", c.chain, err)
-			}
-			if !exists {
-				if _, err := b.exec.Run(ctx, b.binFor(family), "-t", c.table,
-					"-I", c.hook, "1", "-j", c.chain); err != nil {
-					return fmt.Errorf("挂接 %s → %s: %w", c.hook, c.chain, err)
-				}
+	b.ipv6 = false
+	if _, ok := b.exec.LookPath("ip6tables"); ok {
+		if _, err := b.exec.Run(ctx, "ip6tables", "-L", "-n"); err == nil {
+			b.ipv6 = true
+		}
+	}
+	if err := b.initFamily(ctx, "ipv4"); err != nil {
+		return err
+	}
+	if b.ipv6 {
+		if err := b.initFamily(ctx, "ipv6"); err != nil {
+			b.ipv6 = false
+		}
+	}
+	return nil
+}
+
+func (b *IPTablesBackend) initFamily(ctx context.Context, family string) error {
+	for _, c := range iptChains {
+		// 建链（已存在会报错，忽略）
+		_, _ = b.exec.Run(ctx, b.binFor(family), "-t", c.table, "-N", c.chain)
+		// 挂接：-C 检查存在，不存在则 -I 到内置链最前
+		exists, err := b.checkJump(ctx, family, c)
+		if err != nil {
+			return fmt.Errorf("检查挂接 %s: %w", c.chain, err)
+		}
+		if !exists {
+			if _, err := b.exec.Run(ctx, b.binFor(family), "-t", c.table,
+				"-I", c.hook, "1", "-j", c.chain); err != nil {
+				return fmt.Errorf("挂接 %s → %s: %w", c.hook, c.chain, err)
 			}
 		}
 	}
@@ -87,7 +120,11 @@ func (b *IPTablesBackend) checkJump(ctx context.Context, family string, c struct
 // --noflush 保证只动 FPANEL_* 链；restore 每表一次 COMMIT，内核侧原子生效。
 // 每个地址族（v4/v6）一次调用，规则经 stdin 传入。
 func (b *IPTablesBackend) Apply(ctx context.Context, rules []Rule) error {
-	for _, family := range []string{"ipv4", "ipv6"} {
+	// 纵深防御：任何字段含脚本注入字符时拒绝整批应用（原子失败，不留半配置）
+	if err := checkRulesSafe(rules); err != nil {
+		return err
+	}
+	for _, family := range b.families() {
 		var filter, nat strings.Builder
 		filter.WriteString("-F FPANEL_INPUT\n-F FPANEL_FORWARD\n")
 		nat.WriteString("-F FPANEL_DNAT\n-F FPANEL_SNAT\n")
@@ -172,11 +209,13 @@ func renderIPTLimit(l *Limit, proto string) string {
 func iptPort(p string) string { return strings.ReplaceAll(p, "-", ":") }
 
 // Snapshot 解析 iptables-save 输出提取面板链规则。
+// 必须带 -c：不带时 iptables-save 不输出每条规则的命中计数，
+// 面板的「规则命中排行」会永远是 0。
 func (b *IPTablesBackend) Snapshot(ctx context.Context) (*Snapshot, error) {
 	snap := &Snapshot{Backend: BackendIPTables}
 	var rules []KernelRule
-	for _, fam := range []string{"ipv4", "ipv6"} {
-		out, err := b.exec.Run(ctx, b.saveBinFor(fam))
+	for _, fam := range b.families() {
+		out, err := b.exec.Run(ctx, b.saveBinFor(fam), "-c")
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +226,7 @@ func (b *IPTablesBackend) Snapshot(ctx context.Context) (*Snapshot, error) {
 		rules = append(rules, rs...)
 		// 链存在与挂接状态
 		for _, c := range iptChains {
-			view := ChainView{Name: c.chain, Exists: strings.Contains(out, ":FPANEL"), Reference: c.table + "/" + c.hook}
+			view := ChainView{Name: c.chain, Reference: c.table + "/" + c.hook}
 			view.Exists = strings.Contains(out, ":"+c.chain+" - [")
 			view.Hooked = existsJump(out, c.hook, c.chain)
 			snap.Chains = append(snap.Chains, view)
@@ -198,12 +237,16 @@ func (b *IPTablesBackend) Snapshot(ctx context.Context) (*Snapshot, error) {
 }
 
 func existsJump(saveOut, hook, chain string) bool {
-	re := regexp.MustCompile(`(?m)^-A ` + hook + ` .*-j ` + chain + `$`)
+	// -c 输出会带 "[packets:bytes] " 前缀，先容忍再匹配
+	re := regexp.MustCompile(`(?m)^(?:\[\d+:\d+\]\s+)?-A ` + hook + ` .*-j ` + chain + `$`)
 	return re.MatchString(saveOut)
 }
 
+// counterPrefixRe 匹配 iptables-save -c 的规则前缀计数 "[pkts:bytes] "。
+var counterPrefixRe = regexp.MustCompile(`^\[(\d+):(\d+)\]\s*`)
+
 // parseIPTablesSave 从 iptables-save 输出提取面板链规则。
-// 行格式：-A FPANEL_INPUT -s 1.2.3.4/32 -p tcp --dport 22 [12:345] -m comment --comment "fp:bl:1:1" -j DROP
+// 行格式（-c）：[0:0] -A FPANEL_INPUT -s 1.2.3.4/32 -p tcp --dport 22 -m comment --comment "fp:bl:1:1" -j DROP
 func parseIPTablesSave(out, family string) []KernelRule {
 	var rules []KernelRule
 	sc := bufio.NewScanner(strings.NewReader(out))
@@ -212,6 +255,13 @@ func parseIPTablesSave(out, family string) []KernelRule {
 	commentRe := regexp.MustCompile(`-m comment --comment "([^"]+)"`)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
+		var counter Counter
+		if sub := counterPrefixRe.FindStringSubmatch(line); sub != nil {
+			pk, _ := strconv.ParseUint(sub[1], 10, 64)
+			by, _ := strconv.ParseUint(sub[2], 10, 64)
+			counter = Counter{Packets: pk, Bytes: by}
+			line = strings.TrimSpace(line[len(sub[0]):])
+		}
 		if !strings.HasPrefix(line, "-A FPANEL_") {
 			continue
 		}
@@ -222,7 +272,7 @@ func parseIPTablesSave(out, family string) []KernelRule {
 		if len(parts) > 1 {
 			spec = parts[1]
 		}
-		var counter Counter
+		// 兼容个别版本把计数写在规则内部的形式
 		spec2 := countRe.ReplaceAllStringFunc(spec, func(m string) string {
 			sub := countRe.FindStringSubmatch(m)
 			pk, _ := strconv.ParseUint(sub[1], 10, 64)
@@ -240,10 +290,9 @@ func parseIPTablesSave(out, family string) []KernelRule {
 		spec2 = strings.Join(strings.Fields(spec2), " ")
 		rules = append(rules, KernelRule{
 			Chain: chain, Tag: tag, Spec: spec2, Counter: counter, Comment: comment,
-			// Family 通过链内地址语法推断意义不大，直接标注
 		})
-		_ = family
 	}
+	_ = family
 	return rules
 }
 
@@ -267,7 +316,7 @@ func (b *IPTablesBackend) Counters(ctx context.Context) (map[string]Counter, err
 }
 
 func (b *IPTablesBackend) Cleanup(ctx context.Context) error {
-	for _, family := range []string{"ipv4", "ipv6"} {
+	for _, family := range b.families() {
 		for _, c := range iptChains {
 			_, _ = b.exec.Run(ctx, b.binFor(family), "-t", c.table, "-D", c.hook, "-j", c.chain)
 			_, _ = b.exec.Run(ctx, b.binFor(family), "-t", c.table, "-F", c.chain)

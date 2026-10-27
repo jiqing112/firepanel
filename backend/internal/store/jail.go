@@ -13,7 +13,7 @@ type JailConfig struct {
 	Name        string    `json:"name"`
 	SourceType  string    `json:"source_type"` // file|journald|audit
 	LogPath     string    `json:"log_path"`
-	Unit        string    `json:"unit"`      // journald -u
+	Unit        string    `json:"unit"` // journald -u
 	MatchRegex  string    `json:"match_regex"`
 	Threshold   int       `json:"threshold"`
 	FindTime    int       `json:"find_time"` // 秒

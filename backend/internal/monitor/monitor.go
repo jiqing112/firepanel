@@ -37,7 +37,7 @@ type ConnRate struct {
 	Remote  string  `json:"remote"`
 	Process string  `json:"process"`
 	PID     string  `json:"pid"`
-	Count   int     `json:"count"`  // 聚合条数（TCP 恒 1；UDP 按进程聚合的会话数）
+	Count   int     `json:"count"`   // 聚合条数（TCP 恒 1；UDP 按进程聚合的会话数）
 	Remotes int     `json:"remotes"` // UDP 聚合行的对端地址数
 	RxBps   float64 `json:"rx_bps"`
 	TxBps   float64 `json:"tx_bps"`
@@ -77,12 +77,12 @@ func New(exec fw.Executor, interval time.Duration) *Monitor {
 		interval = 2 * time.Second
 	}
 	return &Monitor{
-		exec:      exec,
-		interval:  interval,
-		ifaces:    map[string]IfaceRate{},
-		window:    map[string][]IfacePoint{},
-		prevSock:  map[sockKey]sysinfo.SocketSample{},
-		prevDev:   map[string]sysinfo.DevCounter{},
+		exec:     exec,
+		interval: interval,
+		ifaces:   map[string]IfaceRate{},
+		window:   map[string][]IfacePoint{},
+		prevSock: map[sockKey]sysinfo.SocketSample{},
+		prevDev:  map[string]sysinfo.DevCounter{},
 	}
 }
 

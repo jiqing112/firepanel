@@ -44,12 +44,14 @@ server:
   basic_auth_user: ""
   basic_auth_pass: ""
 
-  # SSH 保护端口（涉及这些端口的变更会触发高危确认流程）
-  ssh_ports: [22]
-
 firewall:
   # 防火墙后端：auto（探测 nftables → iptables）| iptables | nftables
   backend: "auto"
+
+  # SSH 保护端口（涉及这些端口的变更会触发高危确认流程）
+  # 注意：本字段必须位于 firewall 段下。旧版示例曾误放在 server 段，
+  # 面板仍兼容读取，但两处同时存在时会以这里为准并打印告警。
+  ssh_ports: [22]
 
 sync:
   # 内核漂移检测周期

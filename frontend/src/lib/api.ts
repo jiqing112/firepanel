@@ -235,6 +235,15 @@ export interface CaddySiteOpts {
   log_access: boolean;
 }
 
+/** 域名创建/更新入参：caddy_opts 可传 JSON 字符串或结构化对象（后端按 RawMessage 解析）；
+ *  cert_pem/key_pem 仅提交时携带，不回读（后端 json:"-"）。 */
+export type ProxyDomainInput = Partial<Omit<ProxyDomain, 'caddy_opts'>> & {
+  domain?: string;
+  caddy_opts?: string | CaddySiteOpts;
+  cert_pem?: string;
+  key_pem?: string;
+};
+
 export interface CaddyGlobalSettings {
   email: string;
   debug: boolean;
@@ -268,7 +277,7 @@ export interface BasicAuthInfo {
   enabled: boolean;
   username: string;
   password_set: boolean;
-  source: '' | 'settings' | 'config';
+  source: '' | 'file' | 'config';
 }
 
 export interface ListenPort {
@@ -341,6 +350,35 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };
 
+/**
+ * 带鉴权头下载文件（备份/导出用）。
+ * 走 fetch + Blob 而非直接 <a href>：确保携带 X-Panel-Token 头（否则 401），
+ * 同时避免把 token 放进 URL 查询串。失败时抛出 ApiError 供调用方提示。
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`/api/v1${path}`, {
+    headers: token ? { 'X-Panel-Token': token } : {},
+  });
+  if (res.status === 401) {
+    setToken(null);
+    if (!location.hash.startsWith('#/login')) location.hash = '#/login';
+    throw new ApiError(401, '未登录');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, (body as { error?: string }).error ?? `下载失败（${res.status}）`, body);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const backend = {
   needsSetup: () => api.get<{ needs_setup: boolean }>('/bootstrap').then((r) => r.needs_setup).catch(() => false),
 
@@ -390,9 +428,9 @@ export const backend = {
 
   /* 反向代理 */
   proxyDomains: () => api.get<{ items: ProxyDomain[]; running: boolean }>('/proxy/domains'),
-  createProxyDomain: (d: Partial<ProxyDomain> & { domain: string }) =>
+  createProxyDomain: (d: ProxyDomainInput & { domain: string }) =>
     api.post<{ item: ProxyDomain }>('/proxy/domains', d),
-  updateProxyDomain: (id: number, d: Partial<ProxyDomain>) => api.put<{ item: ProxyDomain }>(`/proxy/domains/${id}`, d),
+  updateProxyDomain: (id: number, d: ProxyDomainInput) => api.put<{ item: ProxyDomain }>(`/proxy/domains/${id}`, d),
   deleteProxyDomain: (id: number) => api.delete<{ ok: boolean }>(`/proxy/domains/${id}`),
   createProxyRoute: (domainId: number, r: Partial<ProxyRoute>) =>
     api.post<{ item: ProxyRoute }>(`/proxy/domains/${domainId}/routes`, r),
@@ -402,8 +440,28 @@ export const backend = {
   setProxyEngine: (p: { engine: string; http_addr: string; https_addr: string }) =>
     api.post<{ ok: boolean }>('/proxy/engine', p),
   installCaddy: () => api.post<{ version: string }>('/proxy/caddy/install'),
-  caddyfile: () => api.get<{ caddyfile: string; custom: string; path: string }>('/proxy/caddyfile'),
-  saveCaddyfile: (content: string) => api.post<{ ok: boolean }>('/proxy/caddyfile', { content }),
+  caddyfile: () =>
+    api.get<{
+      /** 兼容字段：文件存在时为磁盘真实内容，否则为面板生成预览 */
+      caddyfile: string;
+      /** 服务器磁盘上的实际内容 */
+      current: string;
+      /** 面板生成预览（托管段） */
+      generated: string;
+      custom: string;
+      path: string;
+      exists: boolean;
+      managed: boolean;
+      legacy: boolean;
+      merge_mode: 'create' | 'update' | 'migrate' | 'append';
+      hash: string;
+      read_error?: string;
+    }>('/proxy/caddyfile'),
+  saveCaddyfile: (content: string, baseHash = '') =>
+    api.post<{ ok: boolean; backup: string; hash: string; path: string }>('/proxy/caddyfile', {
+      content,
+      base_hash: baseHash,
+    }),
   setCaddyCustom: (custom: string) => api.post<{ ok: boolean }>('/proxy/caddy-custom', { custom }),
   caddyGlobal: () => api.get<{ config: CaddyGlobalSettings }>('/proxy/caddy-global'),
   setCaddyGlobal: (g: CaddyGlobalSettings) => api.post<{ ok: boolean }>('/proxy/caddy-global', g),
@@ -469,9 +527,6 @@ export const backend = {
     api.get<{ listen: string; https_port: string; https_enabled: boolean; source_listen: string; source_https: string }>('/settings/ports'),
   setPanelPorts: (p: { listen: string; https_port: string }) => api.post<{ ok: boolean; need_restart: boolean }>('/settings/ports', p),
   restartPanel: () => api.post<{ ok: boolean; message: string }>('/system/restart'),
-  basicAuth: () => api.get<BasicAuthInfo>('/settings/basicauth'),
-  setBasicAuth: (p: { enabled: boolean; username: string; password: string }) =>
-    api.post<{ ok: boolean; enabled: boolean }>('/settings/basicauth', p),
   createUser: (u: { username: string; password: string; role: string }) =>
     api.post<{ item: User }>('/users', u),
   deleteUser: (id: number) => api.delete<{ ok: boolean }>(`/users/${id}`),
@@ -501,7 +556,9 @@ export function connectWS() {
   const t = getToken();
   if (!t) return;
   try {
-    ws = new WebSocket(`${proto}://${location.host}/api/ws?token=${encodeURIComponent(t)}`);
+    // 凭据走 Sec-WebSocket-Protocol 子协议（"fp.<JWT>"），不放进 URL：
+    // 查询串会被反代/网关写进访问日志，等于把会话令牌留痕。
+    ws = new WebSocket(`${proto}://${location.host}/api/ws`, [`fp.${t}`]);
   } catch {
     scheduleReconnect();
     return;

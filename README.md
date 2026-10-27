@@ -9,13 +9,13 @@
 - **端口台账**：本机监听端口实时扫描（进程/PID/监听地址/Docker 映射识别），端口用途记录与监听状态联动
 - **流量监控**：网卡实时收发速率与 5 分钟趋势图（nload 式），TCP 连接级流量排行（iftop 式，socket 计数差分）
 - **IP 黑白名单**：单 IP / CIDR 批量管理，标签分组、过期自动解封、txt/csv/json 导入导出
-- **反向代理**：HTTP/HTTPS 域名 + 路径路由，WebSocket 透传，上游健康检查，Let's Encrypt 自动证书（certmagic）与手动证书；**双引擎面板内切换**（内置零依赖引擎 / **Caddy 完全接管**：面板生成完整 Caddyfile → validate → 写 /etc/caddy/Caddyfile → 优雅重载，重启 Caddy 不丢配置；Caddyfile 可预览/导出/手改）+ 环境探测推荐（80/443 占用检测 → HTTP-01 / TLS-ALPN / DNS-01 挑战矩阵），DNS-01 内置 Cloudflare / 阿里云 / DNSPod 凭据，支持泛域名与寄生前置配置生成；站点级压缩/安全头/访问日志开关；IP 短期证书（shortlived，内置引擎）
+- **反向代理**：HTTP/HTTPS 域名 + 路径路由，WebSocket 透传，上游健康检查，Let's Encrypt 自动证书（certmagic）与手动证书；**双引擎面板内切换**（内置零依赖引擎 / **Caddy 托管**：面板只维护 `managed begin/end` 托管段 → validate → 自动备份 `.bak-时间戳` → 合并写入 → 优雅重载，重启 Caddy 不丢配置；**不整盘覆盖**，已有站点/snippets 原样保留，Caddyfile 读取的是服务器实际文件、可预览/追加/手改）+ 环境探测推荐（80/443 占用检测 → HTTP-01 / TLS-ALPN / DNS-01 挑战矩阵），DNS-01 内置 Cloudflare / 阿里云 / DNSPod 凭据，支持泛域名与寄生前置配置生成；站点级压缩/安全头/访问日志开关；IP 短期证书（shortlived，内置引擎）
 - **防火墙规则视图**：内核实时规则、命中计数、链挂接状态、**漂移检测**与一键重新同步
 - **限速防护**：按 IP / 总量限速（hashlimit / nft meter）、单 IP 并发连接限制（connlimit / ct count），防 CC 与扫描
 - **NAT 管理**：SNAT / MASQUERADE 多网卡出口策略（ip_forward 未开启时一键开启并持久化）
 - **定时任务**：cron 计划启停转发规则、清理过期名单、周期同步
 - **告警通知**：Telegram / Webhook / SMTP，可订阅事件（应用失败、漂移、高危待确认、上游不可达、自动回滚）
-- **备份迁移**：JSON 全量备份/恢复 + iptables-save / nft ruleset 导出，跨机迁移
+- **备份迁移**：JSON 结构化配置备份/恢复（转发/名单/限速/NAT/定时任务/告警/防爆破/台账/反代，**不含**用户与设置）+ iptables-save / nft ruleset 导出，跨机迁移
 - **多用户**：admin / viewer 角色，bcrypt + JWT，操作审计
 - **访问防护**：设置页可开启整站 Basic Auth（运行时生效），凭据写入程序目录 `basicauth.yaml`（0600，可手动编辑），端口扫描器只看到 401
 - **安全设计**：涉及 SSH 端口 / 管理 IP 的变更加危险确认流程（二次确认 + 延时生效 + 超时自动回滚）
@@ -85,7 +85,7 @@ bash install.sh            # 默认安装到 /opt/firepanel，面板端口 18088
 2. 安装 nftables / iptables（仅当系统没有时）
 3. 二进制放到 `/opt/firepanel/`
 4. 写入并启用 systemd 服务 `firepanel`（开机自启，崩溃自动重启）
-5. **先备份现有防火墙规则**到 `/tmp/firepanel-ruleset-backup-<时间戳>.txt`，再放行面板端口
+5. **先备份现有防火墙规则**到 `/tmp/firepanel-ruleset-backup-<时间戳>.txt`，再放行面板端口：优先 ufw / firewalld，其次 iptables；同时安装 `firepanel-bootstrap.service`，**每次开机在面板启动前重新放行**（只插一条 iptables 规则在重启后会被宿主防火墙的持久化配置覆盖，面板会失联）
 6. 启动并输出访问地址
 
 成功标志：输出 `FirePanel 已启动` + 访问地址。验证：
@@ -120,7 +120,8 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now firepanel
 
-# ③ 放行面板端口（临时；之后可在面板内管理）
+# ③ 放行面板端口（临时；重启后会丢失，生产环境建议用方式一脚本，
+#    它会额外安装 firepanel-bootstrap.service 在每次开机重放放行）
 iptables -I INPUT 1 -p tcp --dport 18088 -j ACCEPT
 ```
 
@@ -143,9 +144,11 @@ git clone https://github.com/jiqing112/firepanel.git
 cd firepanel/deploy && docker compose up -d --build
 ```
 
-- 容器需要 `NET_ADMIN` 能力操作宿主 netfilter（compose 已配置）
-- 面板 18088、反代 80/443 已映射；数据（SQLite + 证书）落在 `deploy/data/`
-- 验证：`docker ps` 可见 firepanel；`curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON
+- **必须使用 host 网络**（compose 已配置 `network_mode: host` + `pid: host`）：面板要管理宿主机 netfilter 并监听宿主 80/443，bridge 网络下规则只作用于容器自身、端口只是映射，宿主防火墙根本不受管理
+- 容器需要 `NET_ADMIN`/`NET_RAW` 能力（已配置），并以宿主 root 权限运行——这是操作内核防火墙的必要条件
+- 镜像已含 `iptables`/`nftables`/`iproute2`（`ss`），面板 18088、反代 80/443 直接监听宿主端口
+- 数据（SQLite + 证书）落在 `deploy/data/`
+- 验证：`docker ps` 可见 firepanel（healthy）；`curl http://127.0.0.1:18088/api/v1/bootstrap` 返回 JSON
 
 ### 首次初始化
 
@@ -244,13 +247,18 @@ systemctl start firepanel
 
 ### 数据备份与迁移
 
-- 面板内：「备份迁移」页导出 JSON（转发/名单）+ iptables-save / nft ruleset
-- 文件级：直接备份 `data/` 目录（`firepanel.db` + `certs/`），拷到新机同路径即完成迁移
+- 面板内：「备份迁移」页导出 JSON（转发/名单/限速/NAT/定时任务/告警/防爆破/端口台账/反代域名与路由）+ iptables-save / nft ruleset
+- JSON 备份**不包含**用户账号与设置（JWT 密钥、Basic Auth、DNS-01 凭据、Caddy 全局选项、面板端口），跨机迁移后需重新创建账号并重配这些项
+- 反代域名的手动证书会连同**私钥**一起写进备份文件，请按密钥级别保管
+- 文件级：直接备份 `data/` 目录（`firepanel.db` + `certs/`），拷到新机同路径即完成迁移（账号/设置也一并带走）
 
 ### 卸载
 
 ```bash
 systemctl disable --now firepanel
+# 安装脚本额外创建的开机放行单元（方式一安装时存在）
+systemctl disable --now firepanel-bootstrap.service 2>/dev/null || true
+rm -f /etc/systemd/system/firepanel-bootstrap.service /usr/local/sbin/firepanel-bootstrap-firewall
 rm -rf /opt/firepanel /etc/systemd/system/firepanel.service
 systemctl daemon-reload
 # 面板自有链（FPANEL_* / table inet firepanel）可在面板「防火墙规则」页清空，
@@ -311,8 +319,11 @@ scripts/            build.sh / sshx（开发期 SSH 工具）
 ```bash
 cd frontend && npm install && npm run dev     # 前端热更新（代理到 :8080）
 cd backend && go test ./...                   # 后端单测（可在任意平台跑）
-bash scripts/build.sh linux                   # 构建单二进制
+bash scripts/build.sh linux dist arm64        # 构建单二进制（架构可选 amd64/arm64）
 ```
+
+> 后端 `//go:embed all:dist` 依赖 `backend/internal/web/dist/` 非空：仓库内已放 `.gitkeep` 占位，
+> 干净检出可直接 `go build`（未构建前端时页面为 404）。要得到可用二进制请走 `scripts/build.sh` 或 CI 流程。
 
 ## 文档
 
@@ -325,3 +336,5 @@ bash scripts/build.sh linux                   # 构建单二进制
 - 局域网内无法完成 Let's Encrypt 真实签发（需公网 80/443 可达）；内网用手动证书或无 TLS
 - GeoIP 国家过滤需要 mmdb 数据文件（数据结构已预留，页面入口后续开放）
 - 临时封禁 / 定时任务依赖面板进程存活；面板停机期间 cron 不触发（恢复后按计划继续）
+- 高危变更的延时生效/确认窗口进行中若面板重启，未确认的变更会在启动时**自动回滚到变更前状态**（安全优先，不会在无确认的情况下生效）；如需保留请重新提交并完成确认
+- 仅 nft-only 且 INPUT 策略为 drop 的主机：安装脚本的放行规则可能被宿主自己的 base chain 覆盖，需在宿主防火墙配置中显式放行面板端口

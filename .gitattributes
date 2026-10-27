@@ -1,0 +1,13 @@
+# 统一换行符：脚本必须是 LF，否则 Linux 上 bash 会报 $'\r' 错误
+* text=auto eol=lf
+*.sh text eol=lf
+*.go text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.svelte text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.sql text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

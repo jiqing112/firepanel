@@ -88,4 +88,3 @@ func EnsureCaddyService(ctx context.Context, runner Runner) error {
 	_, _ = runner.Run(ctx, "systemctl", "restart", "caddy")
 	return nil
 }
-

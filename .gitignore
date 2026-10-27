@@ -1,11 +1,16 @@
 # 构建产物
-dist/
+/dist/
 backend/dist/
 *.exe
 
 # 前端
 frontend/node_modules/
 frontend/dist/
+
+# 内嵌前端产物：内容不入库，但保留占位文件，
+# 让干净检出可以 go build（否则 //go:embed all:dist 直接失败）。
+backend/internal/web/dist/*
+!backend/internal/web/dist/.gitkeep
 
 # 运行时数据（含数据库与证书，绝不入库）
 data/
@@ -17,7 +22,11 @@ certs/
 # 日志
 *.log
 
-# 本机工具目录
+# 本机工具目录 / 缓存 / AI 工作区
 .zcode/
+.zwork/
+.workbuddy-ai/
+.gocache/
+backend/.gocache/
 .vscode/
 .idea/

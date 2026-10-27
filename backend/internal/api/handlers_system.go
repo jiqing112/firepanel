@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -118,13 +117,13 @@ func (s *Server) TrafficOverview(c *gin.Context) {
 	}
 	rx, tx := monitor.SumBps(snap.Interfaces)
 	c.JSON(200, gin.H{
-		"interfaces": snap.Interfaces,
-		"window":     snap.Window,
-		"conns":      snap.Conns,
+		"interfaces":  snap.Interfaces,
+		"window":      snap.Window,
+		"conns":       snap.Conns,
 		"conns_error": snap.ConnsErr,
-		"ts":         snap.Ts,
-		"rx_bps":     rx,
-		"tx_bps":     tx,
+		"ts":          snap.Ts,
+		"rx_bps":      rx,
+		"tx_bps":      tx,
 	})
 }
 
@@ -206,57 +205,6 @@ func (s *Server) FirewallRules(c *gin.Context) {
 		snap.Rules = []fw.KernelRule{}
 	}
 	c.JSON(200, gin.H{"snapshot": snap})
-}
-
-// Backup 导出备份：format=json（期望状态）| iptables-save | nft。
-func (s *Server) Backup(c *gin.Context) {
-	format := c.Query("format")
-	switch format {
-	case "iptables-save":
-		if s.App.Backend.Name() != fw.BackendIPTables {
-			c.JSON(400, gin.H{"error": "当前后端不支持 iptables-save 导出"})
-			return
-		}
-		out, err := s.App.Exec.Run(c.Request.Context(), "iptables-save")
-		if err != nil {
-			respErr(c, 500, err)
-			return
-		}
-		c.Header("Content-Disposition", "attachment; filename=firepanel-iptables.v4")
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(out))
-	case "nft":
-		if s.App.Backend.Name() != fw.BackendNftables {
-			c.JSON(400, gin.H{"error": "当前后端不支持 nft 导出"})
-			return
-		}
-		out, err := s.App.Exec.Run(c.Request.Context(), "nft", "list", "ruleset")
-		if err != nil {
-			respErr(c, 500, err)
-			return
-		}
-		c.Header("Content-Disposition", "attachment; filename=firepanel-nft-ruleset.nft")
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(out))
-	default:
-		snap := s.snapshotRowsForBackup()
-		b, _ := json.MarshalIndent(snap, "", "  ")
-		c.Header("Content-Disposition", "attachment; filename=firepanel-backup.json")
-		c.Data(http.StatusOK, "application/json", b)
-	}
-}
-
-func (s *Server) snapshotRowsForBackup() map[string]any {
-	out := map[string]any{
-		"version":   1,
-		"exported":  time.Now().Format(time.RFC3339),
-		"backend":   s.App.Backend.Name(),
-	}
-	if fwds, err := s.App.Store.ListForwards(); err == nil {
-		out["forward_rules"] = fwds
-	}
-	if lists, err := s.App.Store.ListIPLists(""); err == nil {
-		out["ip_lists"] = lists
-	}
-	return out
 }
 
 /* ------------------------- 访问防护（Basic Auth） ------------------------- */
@@ -343,8 +291,8 @@ func (s *Server) GetPanelPorts(c *gin.Context) {
 		return ""
 	}
 	c.JSON(200, gin.H{
-		"listen":     s.App.Cfg.Server.Listen,
-		"https_port": strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":"),
+		"listen":        s.App.Cfg.Server.Listen,
+		"https_port":    strings.TrimPrefix(s.App.Cfg.Server.PanelHTTPSPort, ":"),
 		"https_enabled": s.App.Cfg.Server.PanelHTTPS != "",
 		"source_listen": src("panel_listen"),
 		"source_https":  src("panel_https_port"),
@@ -492,13 +440,13 @@ func (s *Server) DashboardSummary(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"conn_count":     conn,
-		"rx_bps":         rxNow,
-		"tx_bps":         txNow,
-		"traffic_today":  int64(trafficTotal),
-		"samples":        samples,
-		"hit_ranks":      hits,
-		"backend":        s.App.Backend.Name(),
+		"conn_count":    conn,
+		"rx_bps":        rxNow,
+		"tx_bps":        txNow,
+		"traffic_today": int64(trafficTotal),
+		"samples":       samples,
+		"hit_ranks":     hits,
+		"backend":       s.App.Backend.Name(),
 	})
 }
 

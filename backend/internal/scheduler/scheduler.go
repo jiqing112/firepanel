@@ -25,9 +25,9 @@ type Scheduler struct {
 	log   *slog.Logger
 	acts  Actions
 
-	mu    sync.Mutex
-	cron  *cron.Cron
-	ids   map[int64]cron.EntryID
+	mu   sync.Mutex
+	cron *cron.Cron
+	ids  map[int64]cron.EntryID
 }
 
 func New(st *store.Store, log *slog.Logger, acts Actions) *Scheduler {

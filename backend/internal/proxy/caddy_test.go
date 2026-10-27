@@ -141,7 +141,10 @@ func TestCaddyLoadError(t *testing.T) {
 }
 
 func TestCaddyUpstreamDial(t *testing.T) {
-	cases := []struct{ in, want string; tls bool }{
+	cases := []struct {
+		in, want string
+		tls      bool
+	}{
 		{"http://127.0.0.1:9000", "127.0.0.1:9000", false},
 		{"https://up.example.com", "up.example.com:443", true},
 		{"http://10.0.0.5", "10.0.0.5:80", false},

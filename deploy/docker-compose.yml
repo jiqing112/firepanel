@@ -1,7 +1,12 @@
 
 # FirePanel 容器化部署
-# 注意：容器需要操作宿主 netfilter，必须授予 NET_ADMIN（或 --privileged）。
-# 反代的 80/443 若与宿主服务冲突，请改映射端口并用 -proxy-http/-proxy-https 调整监听。
+#
+# 必须使用 host 网络：防火墙面板要在「宿主机」的 netns 里创建 iptables/nft 规则
+# 并监听 80/443。默认 bridge 网络下容器有独立 netns，面板规则只作用于容器自身、
+# 80/443 也只是 Docker 端口映射，宿主防火墙完全不受管理（功能形同虚设）。
+#
+# pid: host 让容器内 ss 能看到宿主机进程（端口台账/连接级流量的进程与 PID 归属）。
+# 因此容器实际以宿主机 root 权限运行 —— 这是管理内核防火墙的必要条件。
 services:
   firepanel:
     build:
@@ -9,15 +14,18 @@ services:
       dockerfile: deploy/Dockerfile
     container_name: firepanel
     restart: unless-stopped
+    network_mode: host
+    pid: host
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    # 如需 IPTABLES 原生路径（CENTOS7 老内核）可改 privileged: true
     volumes:
       - ./data:/data
-    ports:
-      - "18088:18088" # 面板
-      - "80:80"       # 反代 HTTP（含 ACME HTTP-01）
-      - "443:443"     # 反代 HTTPS
     environment:
       - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:18088/api/v1/bootstrap"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

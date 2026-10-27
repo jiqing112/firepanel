@@ -54,6 +54,10 @@ func (b *NftablesBackend) Init(ctx context.Context) error {
 // Apply 生成完整的表内容并在单次 nft -f 事务中替换。
 // flush table 只清面板表内规则，不触碰系统其他表（含 incus/docker/firewalld）。
 func (b *NftablesBackend) Apply(ctx context.Context, rules []Rule) error {
+	// 纵深防御：任何字段含脚本注入字符时拒绝整批应用
+	if err := checkRulesSafe(rules); err != nil {
+		return err
+	}
 	var sb strings.Builder
 	sb.WriteString("flush table inet " + nftTable + "\n")
 	for _, r := range rules {
@@ -82,8 +86,15 @@ func renderNftRule(r Rule) string {
 	if r.OutIface != "" {
 		parts = append(parts, `oifname "`+r.OutIface+`"`)
 	}
+	// nft 语法：限定端口必须带协议（"tcp dport 80"）；只限定协议时用 meta l4proto。
+	// 早先实现会对「有协议无端口」（全端口限速）生成 "tcp dport "，
+	// nft 解析失败会让整批规则（含所有正常规则）都下发不了。
 	if r.Proto != "" {
-		parts = append(parts, r.Proto+" dport "+nftPort(r.DstPort))
+		if r.DstPort != "" {
+			parts = append(parts, r.Proto+" dport "+nftPort(r.DstPort))
+		} else {
+			parts = append(parts, "meta l4proto "+r.Proto)
+		}
 	}
 	// 面板规则统一挂 counter 以支持命中统计
 	parts = append(parts, "counter")
@@ -112,17 +123,13 @@ func renderNftRule(r Rule) string {
 	}
 	// 惯例：comment 位于语句末尾
 	parts = append(parts, "comment \""+r.Tag+"\"")
-	line := strings.Join(parts, " ") + "\n"
-	if r.Proto == "" && r.DstPort != "" {
-		// 无协议却带端口是非法 nft 语法，跳过端口（理论不可达，防御性处理）
-		line = strings.Replace(line, " dport "+nftPort(r.DstPort), "", 1)
-	}
-	return line
+	return strings.Join(parts, " ") + "\n"
 }
 
 // renderNftLimit 渲染 nft meter（限速或连接数，二者不组合）：
-//   限速:  meter fp1_tcp { [ip saddr] limit rate over 30/minute burst 10 packets }
-//   连接:  meter fp1_tcp_c { ip saddr ct count over 20 }
+//
+//	限速:  meter fp1_tcp { [ip saddr] limit rate over 30/minute burst 10 packets }
+//	连接:  meter fp1_tcp_c { ip saddr ct count over 20 }
 func renderNftLimit(l *Limit) string {
 	var sb strings.Builder
 	sb.WriteString("meter " + meterSafe(l.MeterName) + " { ")

@@ -159,9 +159,11 @@ func validateNAT(r *store.NATRule) error {
 		return errStr("出口网卡名不合法（仅字母数字 . _ -）")
 	}
 	if r.Type == "SNAT" {
-		if fw.NormalizeIPCheck(r.ToAddr) == "" {
+		ip := fw.NormalizeIPCheck(r.ToAddr)
+		if ip == "" {
 			return errStr("SNAT 需要合法的出口 IP")
 		}
+		r.ToAddr = ip // 存规范化后的 IP，杜绝未校验字符串流入内核脚本
 	}
 	return nil
 }
@@ -187,7 +189,7 @@ func (s *Server) ListNAT(c *gin.Context) {
 	}
 	// 附带 ip_forward 状态提示
 	c.JSON(200, gin.H{
-		"items": items,
+		"items":      items,
 		"ip_forward": s.App.IpForwardEnabled(),
 	})
 }
@@ -297,24 +299,30 @@ type taskReq struct {
 	Remark   string `json:"remark"`
 }
 
+// validateTaskFields 校验 cron / 动作 / 目标（创建与更新共用）。
+func validateTaskFields(q *taskReq) error {
+	if _, err := scheduler.NextRun(q.CronExpr); err != nil {
+		return errStr("cron 表达式无效（5 段：分 时 日 月 周）")
+	}
+	switch q.Action {
+	case "forward_enable", "forward_disable", "iplist_expire", "sync":
+	default:
+		return errStr("动作不合法")
+	}
+	if (q.Action == "forward_enable" || q.Action == "forward_disable") && q.TargetID <= 0 {
+		return errStr("该动作需要指定转发规则")
+	}
+	return nil
+}
+
 func (s *Server) CreateTask(c *gin.Context) {
 	var q taskReq
 	if err := c.ShouldBindJSON(&q); err != nil {
 		c.JSON(400, gin.H{"error": "参数不合法"})
 		return
 	}
-	if _, err := scheduler.NextRun(q.CronExpr); err != nil {
-		c.JSON(400, gin.H{"error": "cron 表达式无效（5 段：分 时 日 月 周）"})
-		return
-	}
-	switch q.Action {
-	case "forward_enable", "forward_disable", "iplist_expire", "sync":
-	default:
-		c.JSON(400, gin.H{"error": "动作不合法"})
-		return
-	}
-	if (q.Action == "forward_enable" || q.Action == "forward_disable") && q.TargetID <= 0 {
-		c.JSON(400, gin.H{"error": "该动作需要指定转发规则"})
+	if err := validateTaskFields(&q); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 	t := &store.ScheduledTask{
@@ -340,8 +348,10 @@ func (s *Server) UpdateTask(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "参数不合法"})
 		return
 	}
-	if _, err := scheduler.NextRun(q.CronExpr); err != nil {
-		c.JSON(400, gin.H{"error": "cron 表达式无效"})
+	// 更新同样要校验动作与目标：否则非法动作会入库，只在 cron 触发时
+	// 以「未知动作」失败（用户看不到任何提示）。
+	if err := validateTaskFields(&q); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 	t := &store.ScheduledTask{
@@ -386,10 +396,10 @@ func (s *Server) ListAlerts(c *gin.Context) {
 }
 
 type alertReq struct {
-	Channel    string   `json:"channel"`
-	Config     any      `json:"config"`
-	Events     []string `json:"events"`
-	Enabled    bool     `json:"enabled"`
+	Channel string   `json:"channel"`
+	Config  any      `json:"config"`
+	Events  []string `json:"events"`
+	Enabled bool     `json:"enabled"`
 }
 
 func (s *Server) UpsertAlert(c *gin.Context) {
@@ -478,11 +488,15 @@ func (s *Server) TestAlert(c *gin.Context) {
 /* ------------------------- 辅助 ------------------------- */
 
 func parsePortRangeStr(v string) *struct{ a, b int } {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
 	if strings.Contains(v, "-") {
 		parts := strings.SplitN(v, "-", 2)
-		a, e1 := strconv.Atoi(parts[0])
-		b, e2 := strconv.Atoi(parts[1])
-		if e1 != nil || e2 != nil || a > b {
+		a, e1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		b, e2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if e1 != nil || e2 != nil || a > b || a < 1 || b > 65535 {
 			return nil
 		}
 		return &struct{ a, b int }{a, b}
@@ -493,4 +507,3 @@ func parsePortRangeStr(v string) *struct{ a, b int } {
 	}
 	return &struct{ a, b int }{n, n}
 }
-

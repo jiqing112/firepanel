@@ -47,7 +47,10 @@ fi
 # ---------- 3. 放置二进制 ----------
 mkdir -p "$INSTALL_DIR/data"
 ARCH="$(uname -m)"
-[ "$ARCH" = "x86_64" ] || { echo "!! 仅支持 x86_64（当前 $ARCH）"; exit 1; }
+case "$ARCH" in
+  x86_64|amd64|aarch64|arm64) ;;
+  *) echo "!! 仅支持 x86_64 / aarch64（当前 $ARCH）"; exit 1 ;;
+esac
 
 if [ -f "$(dirname "$0")/firepanel" ]; then
   echo "==> 使用本地二进制"
@@ -78,23 +81,79 @@ RestartSec=3
 WantedBy=multi-user.target
 UNIT
 
-# ---------- 5. 防火墙放行面板端口（先备份） ----------
+# ---------- 5. 防火墙放行面板端口（备份 + 持久化） ----------
 echo "==> 备份并放行面板端口 $PANEL_PORT"
 BACKUP="/tmp/firepanel-ruleset-backup-$(date +%s).txt"
-if command -v nft >/dev/null 2>&1 && nft list ruleset > "$BACKUP" 2>/dev/null; then
-  echo "    nftables 快照: $BACKUP"
-  nft add table inet firepanel_bootstrap 2>/dev/null || true
-  nft add rule inet firepanel_bootstrap input tcp dport "$PANEL_PORT" accept counter comment "fp:bootstrap" 2>/dev/null || true
+if command -v nft >/dev/null 2>&1; then
+  nft list ruleset > "$BACKUP" 2>/dev/null && echo "    nftables 快照: $BACKUP"
 elif command -v iptables >/dev/null 2>&1; then
-  iptables-save > "$BACKUP" 2>/dev/null || true
-  echo "    iptables 快照: $BACKUP"
-  iptables -I INPUT 1 -p tcp --dport "$PANEL_PORT" -m comment --comment "fp:bootstrap" -j ACCEPT 2>/dev/null || true
+  iptables-save > "$BACKUP" 2>/dev/null && echo "    iptables 快照: $BACKUP"
 fi
-echo "    说明：安装后可在面板「防火墙规则」页自行管理端口放行"
 
+# 立即放行 + 开机自动重放：写成独立脚本并由 systemd 单元在面板启动前执行。
+# 只插一条 iptables 规则是不够的——重启后规则会被宿主防火墙的持久化配置覆盖，
+# 面板端口就再次被挡在外面（云主机上表现为「安装当天能用，重启后失联」）。
+BOOTSTRAP_SCRIPT=/usr/local/sbin/firepanel-bootstrap-firewall
+cat > "$BOOTSTRAP_SCRIPT" <<BOOTSTRAP
+#!/bin/sh
+# 由 FirePanel install.sh 生成：放行面板端口（幂等，可重复执行）。
+PORT="$PANEL_PORT"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  ufw allow "\$PORT/tcp" >/dev/null 2>&1 && exit 0
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then
+  firewall-cmd --permanent --add-port="\$PORT/tcp" >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+  exit 0
+fi
+if command -v iptables >/dev/null 2>&1; then
+  iptables -C INPUT -p tcp --dport "\$PORT" -m comment --comment "fp:bootstrap" -j ACCEPT 2>/dev/null \
+    || iptables -I INPUT 1 -p tcp --dport "\$PORT" -m comment --comment "fp:bootstrap" -j ACCEPT 2>/dev/null \
+    || true
+  # 可用时顺带做一次发行版持久化（bootstrap 单元本身也会在每次开机重放）
+  if command -v netfilter-persistent >/dev/null 2>&1; then
+    netfilter-persistent save >/dev/null 2>&1 || true
+  elif [ -d /etc/iptables ]; then
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+  elif [ -f /etc/sysconfig/iptables ]; then
+    iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+  fi
+  exit 0
+fi
+if command -v nft >/dev/null 2>&1; then
+  nft add table inet firepanel_bootstrap 2>/dev/null || true
+  nft add chain inet firepanel_bootstrap input '{ type filter hook input priority -200; policy accept; }' 2>/dev/null || true
+  nft add rule inet firepanel_bootstrap input tcp dport "\$PORT" counter accept 2>/dev/null || true
+fi
+exit 0
+BOOTSTRAP
+chmod 755 "$BOOTSTRAP_SCRIPT"
+
+cat > /etc/systemd/system/firepanel-bootstrap.service <<'UNIT'
+[Unit]
+Description=FirePanel bootstrap firewall allow (panel port)
+After=network-online.target firewalld.service nftables.service netfilter-persistent.service
+Wants=network-online.target
+Before=firepanel.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/firepanel-bootstrap-firewall
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+if "$BOOTSTRAP_SCRIPT"; then
+  echo "    已放行 tcp/$PANEL_PORT（开机由 firepanel-bootstrap.service 自动重放）"
+else
+  echo "    !! 自动放行失败，请手动放行 tcp/$PANEL_PORT（云服务器还需在安全组放行）"
+fi
+echo "    说明：nft-only 主机若 INPUT 链策略是 drop，还需要在宿主自身的防火墙配置里放行该端口"
 # ---------- 6. 启动 ----------
 systemctl daemon-reload
-systemctl enable --now ${SERVICE}
+systemctl enable --now firepanel-bootstrap.service ${SERVICE}
 sleep 2
 systemctl is-active ${SERVICE} >/dev/null && echo "==> FirePanel 已启动" || { echo "!! 启动失败"; journalctl -u ${SERVICE} -n 20 --no-pager; exit 1; }
 

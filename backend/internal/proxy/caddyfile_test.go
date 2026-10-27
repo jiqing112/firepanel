@@ -34,7 +34,8 @@ func TestBuildCaddyfile(t *testing.T) {
 		{"安全头", "Strict-Transport-Security"},
 		{"访问日志", "/var/log/caddy/fp-app.example.com.log"},
 		{"根路由无 matcher", "\treverse_proxy 127.0.0.1:8080\n"},
-		{"路径路由 matcher", "\treverse_proxy /api/* 127.0.0.1:9000\n"},
+		// 精确路径与子路径都要匹配（只写 /api/* 会漏掉 /api 本身）
+		{"路径路由 matcher", "\treverse_proxy /api /api/* 127.0.0.1:9000\n"},
 		{"https 上游块", "\t\t\ttls\n"},
 	}
 	for _, c := range checks {

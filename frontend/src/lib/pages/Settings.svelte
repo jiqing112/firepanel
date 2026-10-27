@@ -108,7 +108,7 @@
   function primePorts() {
     if (portsLoaded) return;
     portsForm = {
-      listen: (info?.listen ?? '18088').replace(/^:/, ''),
+      listen: (portsInfo?.listen ?? '18088').replace(/^:/, ''),
       https: '',
     };
     portsLoaded = true;
@@ -315,6 +315,9 @@
     <p class="mt-2.5 text-[11px] leading-relaxed text-muted-foreground">
       端口保存时自动试绑校验（被占用会拒绝）；HTTPS 端口仅在已配置面板 HTTPS（-panel-https 参数）时生效。
       重启期间面板不可访问约 3-5 秒，之后请用新地址访问。
+    </p>
+    <p class="mt-1.5 rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-warning">
+      改端口前请先在宿主防火墙与云安全组放行新端口：重启后新端口若被拦截，将无法再从浏览器进入面板（需 SSH 改配置回滚）。
     </p>
   </Card>
 

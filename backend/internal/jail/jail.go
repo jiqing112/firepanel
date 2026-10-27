@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"firepanel/internal/store"
 	"firepanel/internal/fw"
+	"firepanel/internal/store"
 )
 
 // BuiltinPatterns 内置匹配模板（前端预设选择，存库的是完整正则）。
@@ -170,12 +170,12 @@ func (e *Engine) record(j store.JailConfig, ip string) {
 
 	until := now.Add(time.Duration(j.BanTime) * time.Second)
 	entry := &store.IPListEntry{
-		ListType: "black",
-		IPOrCIDR: ip + "/32",
-		GroupTag: "jail:" + j.Name,
-		Source:   "jail:" + j.Name,
+		ListType:  "black",
+		IPOrCIDR:  ip + "/32",
+		GroupTag:  "jail:" + j.Name,
+		Source:    "jail:" + j.Name,
 		ExpiresAt: &until,
-		Remark:   fmt.Sprintf("防爆破：%d 次/%d 秒，封禁 %d 秒", j.Threshold, j.FindTime, j.BanTime),
+		Remark:    fmt.Sprintf("防爆破：%d 次/%d 秒，封禁 %d 秒", j.Threshold, j.FindTime, j.BanTime),
 	}
 	if err := e.st.CreateIPList(entry); err != nil {
 		e.log.Error("jail 封禁写入失败", "jail", j.Name, "ip", ip, "err", err)

@@ -327,16 +327,28 @@ func (s *Server) UpdateIPList(c *gin.Context) {
 	before.Country = req.Country
 	before.Remark = req.Remark
 	if req.ExpiresAt != "" {
-		if t, err := parseTimeLoose(req.ExpiresAt); err == nil {
-			before.ExpiresAt = t
+		t, err := parseTimeLoose(req.ExpiresAt)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
 		}
+		before.ExpiresAt = t
 	}
-	if err := s.App.Store.UpdateIPList(before); err != nil {
+	if s.App.HasPendingDanger() {
+		c.JSON(http.StatusConflict, gin.H{"error": "存在待确认的高危变更，请先确认或撤销"})
+		return
+	}
+	// 走 Mutate：过期时间直接决定该条目是否还下发内核（改到过去=立即解封），
+	// 只改库不同步会让内核停留在旧状态。
+	res, err := s.App.Mutate(c.ClientIP(), func() error {
+		return s.App.Store.UpdateIPList(before)
+	})
+	if err != nil {
 		respErr(c, 500, err)
 		return
 	}
 	s.audit(c, "update", "iplist:"+strconv.FormatInt(id, 10), nil, before)
-	c.JSON(200, gin.H{"item": before})
+	c.JSON(200, gin.H{"item": before, "sync": res})
 }
 
 func (s *Server) DeleteIPList(c *gin.Context) {

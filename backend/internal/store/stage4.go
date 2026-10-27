@@ -170,16 +170,16 @@ func (s *Store) DeleteNAT(id int64) error {
 /* ------------------------- 定时任务 ------------------------- */
 
 type ScheduledTask struct {
-	ID       int64      `json:"id"`
-	Name     string     `json:"name"`
-	CronExpr string     `json:"cron_expr"`
-	Action   string     `json:"action"` // forward_enable|forward_disable|iplist_expire|sync
-	TargetID int64      `json:"target_id"`
-	Enabled  bool       `json:"enabled"`
-	LastRun  *time.Time `json:"last_run"`
-	NextRun  *time.Time `json:"next_run"`
-	Remark   string     `json:"remark"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	CronExpr  string     `json:"cron_expr"`
+	Action    string     `json:"action"` // forward_enable|forward_disable|iplist_expire|sync
+	TargetID  int64      `json:"target_id"`
+	Enabled   bool       `json:"enabled"`
+	LastRun   *time.Time `json:"last_run"`
+	NextRun   *time.Time `json:"next_run"`
+	Remark    string     `json:"remark"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 const taskCols = `id,name,cron_expr,action,target_id,enabled,last_run,next_run,remark,created_at`
