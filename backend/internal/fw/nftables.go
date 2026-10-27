@@ -28,6 +28,9 @@ var nftChains = map[string]string{
 	ChainSrcNat: "type nat hook postrouting priority -110; policy accept;",
 }
 
+// nftChainOrder 固定建链顺序（map 遍历无序，输出需可复现）。
+var nftChainOrder = []string{ChainInput, ChainFwd, ChainDstNat, ChainSrcNat}
+
 func (b *NftablesBackend) Available(ctx context.Context) error {
 	if _, ok := b.exec.LookPath("nft"); !ok {
 		return fmt.Errorf("nft 不存在")
@@ -41,8 +44,8 @@ func (b *NftablesBackend) Available(ctx context.Context) error {
 // 因此逐条执行并忽略“已存在”类错误，最后以 list table 验证。
 func (b *NftablesBackend) Init(ctx context.Context) error {
 	_, _ = b.exec.RunStdin(ctx, "nft", "add table inet "+nftTable+"\n", "-f", "-")
-	for name, spec := range nftChains {
-		stmt := fmt.Sprintf("add chain inet %s %s { %s }\n", nftTable, name, spec)
+	for _, name := range nftChainOrder {
+		stmt := fmt.Sprintf("add chain inet %s %s { %s }\n", nftTable, name, nftChains[name])
 		_, _ = b.exec.RunStdin(ctx, "nft", stmt, "-f", "-")
 	}
 	if _, err := b.exec.Run(ctx, "nft", "list", "table", "inet", nftTable); err != nil {
@@ -52,21 +55,41 @@ func (b *NftablesBackend) Init(ctx context.Context) error {
 }
 
 // Apply 生成完整的表内容并在单次 nft -f 事务中替换。
-// flush table 只清面板表内规则，不触碰系统其他表（含 incus/docker/firewalld）。
+// 采用「删表 + 重建」而不是 flush table：flush 只清规则，命名 set（nft meter）
+// 会保留。meter 名称由规则 id 派生，删掉规则再用同一 id 建规则时，nft 会复用
+// 同名旧 set，里面残留的元素（含旧的每 IP 限速状态）会立即作用到新规则上——
+// 实测可把管理 IP 按旧速率限流。nft -f 是原子事务，删+建无中间态；
+// 只影响面板自有表 inet firepanel，不触碰 incus/docker/firewalld 等其他表。
 func (b *NftablesBackend) Apply(ctx context.Context, rules []Rule) error {
 	// 纵深防御：任何字段含脚本注入字符时拒绝整批应用
 	if err := checkRulesSafe(rules); err != nil {
 		return err
 	}
-	var sb strings.Builder
-	sb.WriteString("flush table inet " + nftTable + "\n")
-	for _, r := range rules {
-		sb.WriteString(renderNftRule(r))
-	}
-	if _, err := b.exec.RunStdin(ctx, "nft", sb.String(), "-f", "-"); err != nil {
+	script := b.buildFullTableScript(rules)
+	if _, err := b.exec.RunStdin(ctx, "nft", script, "-f", "-"); err != nil {
+		// 表被外部删除时 delete 会失败（整批回滚）：重建后重试一次
+		if initErr := b.Init(ctx); initErr == nil {
+			if _, err2 := b.exec.RunStdin(ctx, "nft", b.buildFullTableScript(rules), "-f", "-"); err2 == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("nft 应用失败: %w", err)
 	}
 	return nil
+}
+
+// buildFullTableScript 生成「删表 → 建表 → 建链 → 全部规则」的原子脚本。
+func (b *NftablesBackend) buildFullTableScript(rules []Rule) string {
+	var sb strings.Builder
+	sb.WriteString("delete table inet " + nftTable + "\n")
+	sb.WriteString("add table inet " + nftTable + "\n")
+	for _, name := range nftChainOrder {
+		sb.WriteString(fmt.Sprintf("add chain inet %s %s { %s }\n", nftTable, name, nftChains[name]))
+	}
+	for _, r := range rules {
+		sb.WriteString(renderNftRule(r))
+	}
+	return sb.String()
 }
 
 // renderNftRule 渲染单条 add rule 语句。

@@ -63,6 +63,44 @@ COMMIT`
 	}
 }
 
+// TestNftApplyRebuildsTable 校验 Apply 采用「删表+重建」而非 flush：
+// flush 会留下命名 set（meter），旧限速元素会被同名新规则复用。
+func TestNftApplyRebuildsTable(t *testing.T) {
+	exec := NewFakeExecutor()
+	b := NewNftablesBackend(exec)
+	rules := BuildRules(&DesiredState{
+		RateLimits: []RateLimitSpec{
+			{ID: 1, Name: "cc", Proto: "tcp", Port: "80", PerSrc: true, Rate: 30, RateUnit: "minute", Burst: 10, Enabled: true},
+		},
+	})
+	if err := b.Apply(context.Background(), rules); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	var script string
+	for _, c := range exec.Calls {
+		if strings.HasPrefix(c, "  [stdin] ") {
+			script = c
+		}
+	}
+	if script == "" {
+		t.Fatal("没有通过 stdin 下发 nft 脚本")
+	}
+	if !strings.Contains(script, "delete table inet firepanel") || !strings.Contains(script, "add table inet firepanel") {
+		t.Fatalf("脚本应删除并重建面板表: %s", script)
+	}
+	if strings.Contains(script, "flush table") {
+		t.Fatalf("不应只是 flush（会残留 meter 集合）: %s", script)
+	}
+	for _, chain := range nftChainOrder {
+		if !strings.Contains(script, "add chain inet firepanel "+chain) {
+			t.Errorf("脚本缺少建链 %s: %s", chain, script)
+		}
+	}
+	if !strings.Contains(script, "meter fp1_tcp") {
+		t.Errorf("脚本缺少限速规则: %s", script)
+	}
+}
+
 // TestIPTablesApplySkipsMissingIPv6 校验 ip6tables 不可用时只维护 IPv4（不整体失败）。
 func TestIPTablesApplySkipsMissingIPv6(t *testing.T) {
 	exec := NewFakeExecutor()
