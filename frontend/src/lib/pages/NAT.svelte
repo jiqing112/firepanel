@@ -86,7 +86,7 @@
     if (!valid || submitting) return;
     submitting = true;
     try {
-      const payload = { ...form, src_cidr: form.src_cidr.trim(), out_iface: form.out_iface.trim(), to_addr: form.to_addr.trim(), enabled: true };
+      const payload = { ...form, src_cidr: form.src_cidr.trim(), out_iface: form.out_iface.trim(), to_addr: form.to_addr.trim(), enabled: editing ? editing.enabled : true };
       if (editing) await backend.updateNAT(editing.id, payload);
       else await backend.createNAT(payload);
       createOpen = false;

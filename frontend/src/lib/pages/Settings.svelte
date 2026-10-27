@@ -80,7 +80,7 @@
   let createOpen = $state(false);
   let form = $state({ username: '', password: '', role: 'viewer' as 'admin' | 'viewer' });
   let submitting = $state(false);
-  const valid = $derived(form.username.trim().length >= 2 && form.password.length >= 6);
+  const valid = $derived(form.username.trim().length >= 2 && form.password.length >= 8);
 
   async function submitUser() {
     if (!valid || submitting) return;
@@ -384,7 +384,7 @@
         <Label for="u-pass">密码</Label>
         <Input id="u-pass" type="password" bind:value={form.password} />
         {#if form.password && form.password.length < 6}
-          <p class="text-[11px] text-warning">至少 6 位</p>
+          <p class="text-[11px] text-warning">至少 8 位</p>
         {/if}
       </div>
       <div class="grid gap-2">

@@ -205,7 +205,15 @@ func normalizeCIDR(v string) string {
 //	监听端口段 + 目标同宽端口段 → ip:start-end
 //	监听端口段 + 目标端口省略 → ip（保持原端口）
 //	单端口 → ip:port
+//
+// IPv6 带端口必须写成 [addr]:port：ip6tables 会把 "::1:9000" 当成地址
+// （::1:9000 = ::0.1.144.0）而不是「::1 的 9000 端口」，而且不报错——
+// 规则显示应用成功，实际目标却是另一个地址。
 func dnatTarget(dstIP, listenPort, dstPort string) string {
+	host := dstIP
+	if ip := net.ParseIP(dstIP); ip != nil && ip.To4() == nil {
+		host = "[" + dstIP + "]"
+	}
 	listenRange := parsePortRange(listenPort)
 	dstRange := parsePortRange(dstPort)
 	switch {
@@ -215,11 +223,11 @@ func dnatTarget(dstIP, listenPort, dstPort string) string {
 		if isRange(listenPort) {
 			return dstIP // 端口段转发且未指定目标段：保持原端口
 		}
-		return dstIP + ":" + listenPort
+		return host + ":" + listenPort
 	case isRange(listenPort):
-		return dstIP + ":" + strconv.Itoa(dstRange.start) + "-" + strconv.Itoa(dstRange.end)
+		return host + ":" + strconv.Itoa(dstRange.start) + "-" + strconv.Itoa(dstRange.end)
 	default:
-		return dstIP + ":" + strconv.Itoa(dstRange.start)
+		return host + ":" + strconv.Itoa(dstRange.start)
 	}
 }
 
@@ -347,6 +355,10 @@ func ruleTokenSafe(r Rule) error {
 			safe := ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' ||
 				ch >= '0' && ch <= '9' ||
 				ch == '.' || ch == ':' || ch == '/' || ch == '-' || ch == '_'
+			// DNAT 目标写 IPv6 端口必须用 [addr]:port，方括号只在 to 字段合法
+			if f.name == "to" && (ch == '[' || ch == ']') {
+				safe = true
+			}
 			if !safe {
 				return fmt.Errorf("规则 %s 字段 %s 含非法字符 %q，已拒绝应用", r.Tag, f.name, string(ch))
 			}

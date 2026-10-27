@@ -49,6 +49,8 @@ type MergeResult struct {
 	Backup  string    `json:"backup"`  // 覆盖前的备份路径（首次创建时为空）
 	Content string    `json:"-"`       // 实际写入内容
 	Created bool      `json:"created"` // 目标原本不存在
+	// Skipped 目标内容与服务器现有文件完全一致，未写入、未备份、未重载。
+	Skipped bool `json:"skipped"`
 }
 
 // ReadCaddyfile 读取服务器上真实的 Caddyfile（而不是面板「以为」的内容）。
@@ -133,6 +135,13 @@ func (m *Manager) DeployGenerated(ctx context.Context, cfgs []DomainConfig, g Ca
 	// 追加到他人文件时不能带全局块（Caddy 要求全局块位于文件首个块）
 	block := BuildManagedBlock(cfgs, g, eff, mode != MergeAppend)
 	merged := ApplyMerge(st.Content, mode, block)
+
+	// 目标内容与磁盘完全一致：不写、不备份、不 reload。
+	// 面板每次启动都会 ReloadProxy（caddy 模式下即重新下发），若每次都备份+重载，
+	// 备份目录会以「每次启动一份」的速度增长，Caddy 也被无谓重载。
+	if st.Exists && merged == st.Content {
+		return MergeResult{Mode: mode, Content: merged, Skipped: true}, nil
+	}
 
 	backup, err := m.deployContent(ctx, merged)
 	res := MergeResult{Mode: mode, Backup: backup, Content: merged, Created: !st.Exists}

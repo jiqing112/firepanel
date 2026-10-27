@@ -53,7 +53,8 @@
     if (!valid || submitting) return;
     submitting = true;
     try {
-      await backend.createTask({ ...form, enabled: true });
+      // target_id 必须显式转数字：Select 回写的是字符串，后端 int64 会解码失败
+      await backend.createTask({ ...form, target_id: Number(form.target_id) || 0, enabled: true });
       createOpen = false;
       form = { name: '', cron_expr: '0 2 * * *', action: 'forward_disable', target_id: 0, remark: '' };
       await load();
@@ -174,7 +175,11 @@
         </div>
         <div class="grid gap-2">
           <Label for="tk-target">目标规则 <span class="text-muted-foreground/70">（转发类动作）</span></Label>
-          <Select.Root type="single" bind:value={form.target_id as unknown as string}>
+          <Select.Root
+            type="single"
+            value={form.target_id > 0 ? String(form.target_id) : ''}
+            onValueChange={(v) => (form.target_id = v ? Number(v) : 0)}
+          >
             <Select.Trigger class="w-full">
               {form.target_id > 0 ? `#${form.target_id} ${forwards.find((f) => f.id === form.target_id)?.name ?? ''}` : '仅同步/清理类需要'}
             </Select.Trigger>

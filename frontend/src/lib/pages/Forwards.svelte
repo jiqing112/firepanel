@@ -172,7 +172,8 @@
       dst_ip: form.dst_type === 'ip' ? form.dst_ip.trim() : '',
       dst_domain: form.dst_type === 'domain' ? form.dst_domain.trim() : '',
       dst_port: form.dst_port.trim(),
-      enabled: true,
+      // 编辑时保留原启停状态：硬编码 true 会把已停用的规则静默重新下发内核
+      enabled: editing ? editing.enabled : true,
       remark: form.remark.trim(),
     };
     try {

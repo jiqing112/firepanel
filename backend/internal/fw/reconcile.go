@@ -420,13 +420,15 @@ func normalizePortRange(p string) string {
 	return strings.TrimSpace(p)
 }
 
+// normalizeDNATTo 归一化 DNAT 目标用于比较：去掉 IPv6 方括号并小写。
+// iptables 存 "[::1]:9000"，nft JSON 摘要存 "::1:9000"，两者应视为同一语义。
 func normalizeDNATTo(to string) string {
-	// iptables: 1.2.3.4:80-90；nft JSON: addr+port 分离。统一为 ip:port 形式（缺省端口为空）
-	if i := strings.Index(to, "-"); i > 0 && strings.Index(to, ":") < 0 && strings.Contains(to, ".") {
-		// 纯 "1.2.3.4" 不变；"30000-30010" 已带冒号前置
-		_ = i
-	}
-	return strings.ToLower(to)
+	return strings.ToLower(strings.NewReplacer("[", "", "]", "").Replace(strings.TrimSpace(to)))
+}
+
+// stripToBrackets 仅供 toEquivalent 复用。
+func stripToBrackets(s string) string {
+	return strings.NewReplacer("[", "", "]", "").Replace(s)
 }
 
 // semOfKernelSpec 从内核规则摘要提取语义（iptables-save 或 nft JSON 摘要）。
@@ -541,8 +543,10 @@ func ruleEquivalent(k KernelRule, e Rule) bool {
 	return true
 }
 
-// toEquivalent 对比 DNAT 目标（容忍 ip:port / ip 两种形态与 nft JSON 拆分形式）。
+// toEquivalent 对比 DNAT 目标（容忍 ip:port / ip 两种形态、IPv6 方括号差异与 nft JSON 拆分形式）。
 func toEquivalent(a, b string) bool {
+	a = strings.ToLower(stripToBrackets(a))
+	b = strings.ToLower(stripToBrackets(b))
 	if a == b {
 		return true
 	}
@@ -613,8 +617,21 @@ func classifyDanger(rules []Rule, clientIP string, sshPorts []int) string {
 	return ""
 }
 
-// portOfTo 从 DNAT 目标 "ip:port"/"ip:start-end"/"ip" 中提取端口部分。
+// portOfTo 从 DNAT 目标 "ip:port"/"ip:start-end"/"[IPv6]:port"/"ip" 中提取端口部分。
 func portOfTo(to string) string {
+	to = strings.TrimSpace(to)
+	// 带方括号的 IPv6：[::1]:9000 / [::1]:8000-8010 / [::1]（无端口）
+	if strings.HasPrefix(to, "[") {
+		j := strings.LastIndex(to, "]")
+		if j < 0 || j == len(to)-1 {
+			return ""
+		}
+		return strings.TrimPrefix(to[j+1:], ":")
+	}
+	// 不带方括号的裸地址（IPv4 或 IPv6）没有端口
+	if net.ParseIP(to) != nil {
+		return ""
+	}
 	i := strings.LastIndex(to, ":")
 	if i < 0 {
 		return "" // 无端口 = 保持原端口

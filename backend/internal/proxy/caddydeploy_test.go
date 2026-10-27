@@ -128,6 +128,31 @@ func TestDeployGeneratedOnlyTouchesManagedBlock(t *testing.T) {
 	}
 }
 
+// 内容未变化时不得重复备份/写入/重载（否则每次面板启动都多一份 .bak）。
+func TestDeployGeneratedSkipsUnchanged(t *testing.T) {
+	r := newMemRunner(map[string]string{})
+	m := newTestManager(r)
+	if _, err := m.DeployGenerated(context.Background(), mergeTestCfgs(), CaddyGlobalSettings{}, ""); err != nil {
+		t.Fatalf("首次下发失败: %v", err)
+	}
+	callsBefore := len(r.calls)
+	res, err := m.DeployGenerated(context.Background(), mergeTestCfgs(), CaddyGlobalSettings{}, "")
+	if err != nil {
+		t.Fatalf("二次下发失败: %v", err)
+	}
+	if !res.Skipped {
+		t.Fatalf("内容未变化时应跳过，实际 res=%+v", res)
+	}
+	if res.Backup != "" {
+		t.Fatalf("跳过时不应产生备份，实际 %q", res.Backup)
+	}
+	for _, c := range r.calls[callsBefore:] {
+		if strings.Contains(c, ".bak-") || strings.HasPrefix(c, "cp ") {
+			t.Fatalf("跳过时不应写盘/备份，实际调用: %v", r.calls[callsBefore:])
+		}
+	}
+}
+
 // 读取失败时拒绝下发，磁盘文件保持不变。
 func TestDeployGeneratedAbortsOnReadError(t *testing.T) {
 	r := newMemRunner(map[string]string{})

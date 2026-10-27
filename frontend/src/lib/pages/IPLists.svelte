@@ -10,7 +10,7 @@
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
   import DangerDialog from '$lib/components/common/DangerDialog.svelte';
-  import { backend, type SyncResult, type IPListEntry } from '$lib/api';
+  import { backend, downloadFile, type SyncResult, type IPListEntry } from '$lib/api';
   import { fmtDateTime, fmtNum } from '$lib/utils';
 
   let tab = $state<'black' | 'white'>('black');
@@ -105,17 +105,8 @@
 
   async function exportList(format: 'txt' | 'csv' | 'json') {
     try {
-      const res = await fetch(`/api/v1/ip-lists/export?type=${tab}&format=${format}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('firepanel-token') ?? ''}` },
-      });
-      if (!res.ok) throw new Error(`导出失败（${res.status}）`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `firepanel-${tab}-list.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // 统一走 downloadFile：带 X-Panel-Token，且不覆盖整站 Basic Auth 的 Authorization 头
+      await downloadFile(`/ip-lists/export?type=${tab}&format=${format}`, `firepanel-${tab}-list.${format}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }

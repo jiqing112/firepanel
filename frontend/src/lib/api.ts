@@ -25,6 +25,25 @@ export function getToken() {
   return token;
 }
 
+// 会话失效回调：由 session store 注册（清空内存中的 session.user）。
+// 不在这里直接 import session，避免 api.ts ↔ session store 循环依赖。
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
+/** 是否是「登录/初始化」入口：这些接口的 401 是业务结果（密码错），不能当会话失效处理。 */
+function isAuthEntry(path: string) {
+  return path.startsWith('/auth/login') || path.startsWith('/setup');
+}
+
+function handleUnauthorized() {
+  setToken(null);
+  onUnauthorized?.();
+  if (!location.hash.startsWith('#/login')) location.hash = '#/login';
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     ...init,
@@ -35,12 +54,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init.headers,
     },
   });
-  if (res.status === 401) {
-    setToken(null);
-    if (!location.hash.startsWith('#/login')) location.hash = '#/login';
-    throw new ApiError(401, '未登录');
-  }
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    if (isAuthEntry(path)) {
+      // 密码错误等业务 401：保留后端原始提示，不清会话、不跳转
+      throw new ApiError(401, (body as { error?: string }).error ?? '用户名或密码错误', body);
+    }
+    handleUnauthorized();
+    throw new ApiError(401, (body as { error?: string }).error ?? '未登录', body);
+  }
   if (!res.ok) {
     throw new ApiError(res.status, (body as { error?: string }).error ?? `请求失败（${res.status}）`, body);
   }
@@ -360,9 +382,9 @@ export async function downloadFile(path: string, filename: string): Promise<void
     headers: token ? { 'X-Panel-Token': token } : {},
   });
   if (res.status === 401) {
-    setToken(null);
-    if (!location.hash.startsWith('#/login')) location.hash = '#/login';
-    throw new ApiError(401, '未登录');
+    const body = await res.json().catch(() => ({}));
+    handleUnauthorized();
+    throw new ApiError(401, (body as { error?: string }).error ?? '未登录', body);
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

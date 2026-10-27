@@ -5,7 +5,7 @@
   import { Badge } from '$lib/components/ui/badge';
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
-  import { backend, type FirewallSnapshot, type DriftReport } from '$lib/api';
+  import { backend, downloadFile, type FirewallSnapshot, type DriftReport } from '$lib/api';
   import { fmtBytes, fmtNum, fmtDateTime } from '$lib/utils';
 
   let snap = $state<FirewallSnapshot | null>(null);
@@ -58,11 +58,20 @@
     }
   }
 
-  function exportSave(format: 'iptables-save' | 'nft' | 'json') {
-    const a = document.createElement('a');
-    a.href = `/api/v1/system/backup?format=${format}`;
-    a.download = '';
-    a.click();
+  // 下载必须带 X-Panel-Token（裸 <a href> 不会携带自定义头 → 必然 401）
+  async function exportSave(format: 'iptables-save' | 'nft' | 'json') {
+    const name =
+      format === 'nft'
+        ? 'firepanel-nft-ruleset.nft'
+        : format === 'iptables-save'
+          ? 'firepanel-iptables.v4'
+          : 'firepanel-backup.json';
+    try {
+      await downloadFile(`/system/backup?format=${format}`, name);
+      toast.success('导出已开始下载');
+    } catch (e) {
+      toast.error(e instanceof Error ? `导出失败: ${e.message}` : String(e));
+    }
   }
 
   const chainLabel: Record<string, string> = {

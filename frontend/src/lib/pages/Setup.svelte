@@ -19,7 +19,7 @@
   let loading = $state(false);
   let attempted = $state(false);
 
-  const strong = $derived(password.length >= 6);
+  const strong = $derived(password.length >= 8);
   const match = $derived(password === password2);
   const valid = $derived(username.trim().length >= 2 && strong && match);
   // 各字段是否需要提醒（提交过一次后逐字段显形）
@@ -81,10 +81,10 @@
           <Label for="password">密码</Label>
           <Input id="password" type="password" autocomplete="new-password" bind:value={password} class="h-10 {passInvalid ? 'border-destructive ring-2 ring-destructive/30 animate-shake' : ''}" />
           {#if passInvalid}
-            <p class="text-[11px] text-destructive animate-fade-in">请设置密码（至少 6 位字符）</p>
+            <p class="text-[11px] text-destructive animate-fade-in">请设置密码（至少 8 位字符）</p>
           {/if}
           {#if password && !strong}
-            <p class="text-[11px] text-warning">至少 6 位字符</p>
+            <p class="text-[11px] text-warning">至少 8 位字符</p>
           {/if}
         </div>
         <div class="grid gap-2">

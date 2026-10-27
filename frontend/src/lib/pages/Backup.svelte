@@ -6,14 +6,19 @@
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
   import DangerDialog from '$lib/components/common/DangerDialog.svelte';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog';
   import { backend, downloadFile, type SyncResult } from '$lib/api';
   import { session } from '$lib/stores/session.svelte';
 
   let fileInput = $state<HTMLInputElement | null>(null);
   let restoring = $state(false);
   let danger = $state<{ sync: SyncResult } | null>(null);
+  // 待确认的恢复：解析文件后先展示将替换的内容，确认后才真正提交
+  let pending = $state<{ name: string; payload: Record<string, unknown>; counts: Record<string, number> } | null>(
+    null,
+  );
 
-  // 备份导出为管理员操作（后端 /system/backup 已限管理员）
+  // 备份导出/恢复均为管理员操作（后端已限管理员）
   const isAdmin = $derived(session.user?.role === 'admin');
 
   async function downloadBackup() {
@@ -34,15 +39,49 @@
     }
   }
 
+  function countOf(payload: Record<string, unknown>, key: string): number {
+    const v = payload[key];
+    return Array.isArray(v) ? v.length : 0;
+  }
+
   async function onFileChosen(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
+    if (fileInput) fileInput.value = '';
     if (!file) return;
+    if (!isAdmin) {
+      toast.error('恢复备份需要管理员权限');
+      return;
+    }
+    if (file.size > 16 * 1024 * 1024) {
+      toast.error('备份文件过大（上限 16MB）');
+      return;
+    }
+    try {
+      const payload = JSON.parse(await file.text()) as Record<string, unknown>;
+      if (!payload || typeof payload !== 'object') throw new Error('不是合法的备份 JSON');
+      const counts = {
+        转发: countOf(payload, 'forward_rules'),
+        名单: countOf(payload, 'ip_lists'),
+        限速: countOf(payload, 'rate_limits'),
+        NAT: countOf(payload, 'nat_rules'),
+        任务: countOf(payload, 'tasks'),
+        告警: countOf(payload, 'alerts'),
+        反代域名: countOf(payload, 'rp_domains'),
+      };
+      pending = { name: file.name, payload, counts };
+    } catch (err) {
+      toast.error(err instanceof Error ? `读取备份失败: ${err.message}` : String(err));
+    }
+  }
+
+  async function confirmRestore() {
+    if (!pending || restoring) return;
+    const p = pending;
     restoring = true;
     try {
-      const text = await file.text();
-      const payload = JSON.parse(text);
-      const r = await backend.restore(payload);
+      const r = await backend.restore(p.payload);
+      pending = null;
       if (r.sync?.danger) {
         danger = { sync: r.sync };
       } else {
@@ -52,7 +91,6 @@
       toast.error(e instanceof Error ? `恢复失败: ${e.message}` : String(e));
     } finally {
       restoring = false;
-      if (fileInput) fileInput.value = '';
     }
   }
 </script>
@@ -98,7 +136,7 @@
       <h2 class="text-sm font-semibold">从备份恢复</h2>
     </div>
     <p class="mb-4 text-[12px] leading-relaxed text-muted-foreground">
-      选择面板 JSON 备份文件，将<b class="text-warning">全量替换</b>当前转发规则与黑/白名单并同步内核。
+      选择面板 JSON 备份文件，确认后将<b class="text-warning">全量替换</b>当前结构化配置（转发/名单/限速/NAT/定时任务/告警/反代等）并同步内核。
       涉及 SSH 端口的规则会走高危确认流程。操作前建议先下载一份当前备份。
     </p>
     <input
@@ -112,14 +150,14 @@
       type="button"
       class="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed border-border/80 bg-card/50 px-6 py-10 transition-colors hover:border-primary/40 hover:bg-primary/[0.03] disabled:opacity-50"
       onclick={() => fileInput?.click()}
-      disabled={restoring}
+      disabled={restoring || !isAdmin}
     >
       <DatabaseBackup size={22} class="text-muted-foreground" />
       {#if restoring}
         <span class="text-[13px] font-medium">恢复中…</span>
       {:else}
         <span class="text-[13px] font-medium">选择备份文件</span>
-        <span class="text-[11px] text-muted-foreground">JSON 格式 · 最大 8MB</span>
+        <span class="text-[11px] text-muted-foreground">JSON 格式 · 最大 16MB</span>
       {/if}
     </button>
     <div class="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -156,3 +194,34 @@
 {#if danger}
   <DangerDialog sync={danger.sync} onClose={() => (danger = null)} />
 {/if}
+
+<!-- 恢复确认：备份是全量替换，选错文件会覆盖线上规则，必须先确认 -->
+<AlertDialog.Root open={pending !== null} onOpenChange={(v) => (!v ? (pending = null) : null)}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>确认恢复备份？</AlertDialog.Title>
+      <AlertDialog.Description>
+        将用 <span class="font-mono text-foreground">{pending?.name}</span> 全量替换当前配置，此操作不可撤销。
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    {#if pending}
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-[12.5px]">
+        {#each Object.entries(pending.counts) as [label, n] (label)}
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-muted-foreground">{label}</span>
+            <span class="font-num font-semibold">{n}</span>
+          </div>
+        {/each}
+      </div>
+      <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+        用户账号与系统设置不在备份内，不会被替换。涉及 SSH 端口的规则仍会进入高危确认流程。
+      </p>
+    {/if}
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>取消</AlertDialog.Cancel>
+      <AlertDialog.Action onclick={confirmRestore} disabled={restoring}>
+        {restoring ? '恢复中…' : '确认恢复'}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>

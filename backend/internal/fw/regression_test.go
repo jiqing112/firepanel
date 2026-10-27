@@ -63,6 +63,87 @@ COMMIT`
 	}
 }
 
+// IPv6 DNAT 目标必须写成 [addr]:port，否则 ip6tables/nft 会把 ::1:9000 当成地址。
+func TestIPv6DNATTargetFormatting(t *testing.T) {
+	cases := []struct{ dstIP, listen, dstPort, want string }{
+		{"::1", "18094", "9000", "[::1]:9000"},
+		{"::1", "18094", "", "[::1]:18094"},
+		{"::1", "8000-8010", "9000-9010", "[::1]:9000-9010"},
+		{"::1", "8000-8010", "", "::1"},
+		{"192.0.2.1", "18094", "9000", "192.0.2.1:9000"},
+	}
+	for _, c := range cases {
+		if got := dnatTarget(c.dstIP, c.listen, c.dstPort); got != c.want {
+			t.Errorf("dnatTarget(%q,%q,%q)=%q，期望 %q", c.dstIP, c.listen, c.dstPort, got, c.want)
+		}
+	}
+
+	rules := BuildRules(&DesiredState{Forwards: []ForwardSpec{
+		{ID: 7, Protocol: "tcp", ListenPort: "18094", DstIP: "::1", DstPort: "9000", Enabled: true},
+	}})
+	if len(rules) < 2 {
+		t.Fatalf("应生成 DNAT+FORWARD 两条规则，实际 %d", len(rules))
+	}
+	nft := renderNftRule(rules[0])
+	if !strings.Contains(nft, "dnat ip6 to [::1]:9000") {
+		t.Errorf("nft IPv6 DNAT 渲染错误: %q", nft)
+	}
+	ipt := renderIPTRule(rules[0])
+	if !strings.Contains(ipt, "--to-destination [::1]:9000") {
+		t.Errorf("iptables IPv6 DNAT 渲染错误: %q", ipt)
+	}
+}
+
+func TestPortOfToIPv6(t *testing.T) {
+	cases := []struct{ to, want string }{
+		{"[::1]:9000", "9000"},
+		{"[::1]:8000-8010", "8000-8010"},
+		{"[::1]", ""},
+		{"::1", ""},
+		{"192.0.2.1:80", "80"},
+		{"192.0.2.1", ""},
+	}
+	for _, c := range cases {
+		if got := portOfTo(c.to); got != c.want {
+			t.Errorf("portOfTo(%q)=%q，期望 %q", c.to, got, c.want)
+		}
+	}
+}
+
+// IPv6 的两种内核摘要形态都要与期望规则判定一致（不得误报漂移）。
+func TestDriftEquivalentIPv6DNAT(t *testing.T) {
+	rules := BuildRules(&DesiredState{Forwards: []ForwardSpec{
+		{ID: 8, Protocol: "tcp", ListenPort: "18094", DstIP: "::1", DstPort: "9000", Enabled: true},
+	}})
+	exp := rules[0]
+	specs := []string{
+		"tcp dport == 18094 dnat to ::1:9000",                      // nft JSON 摘要
+		"-p tcp --dport 18094 -j DNAT --to-destination [::1]:9000", // iptables-save
+	}
+	for _, spec := range specs {
+		kr := KernelRule{Chain: ChainDstNat, Tag: exp.Tag, Spec: spec}
+		if !ruleEquivalent(kr, exp) {
+			t.Errorf("IPv6 DNAT 摘要应判定一致: spec=%q expected=%q", spec, exp.To)
+		}
+	}
+}
+
+// IPv6 DNAT 的 [addr]:port 必须通过注入防御校验；其他字段仍不得出现方括号/换行。
+func TestCheckRulesSafeIPv6Brackets(t *testing.T) {
+	rules := BuildRules(&DesiredState{Forwards: []ForwardSpec{
+		{ID: 9, Protocol: "tcp", ListenPort: "18094", DstIP: "::1", DstPort: "9000", Enabled: true},
+	}})
+	if err := checkRulesSafe(rules); err != nil {
+		t.Fatalf("合法 IPv6 DNAT 不应被注入防御拦截: %v", err)
+	}
+	if err := ruleTokenSafe(Rule{Tag: "fp:fw:9:1", Chain: ChainDstNat, Action: "dnat", To: "1.2.3.4:80\nflush table"}); err == nil {
+		t.Fatal("换行注入必须被拒绝")
+	}
+	if err := ruleTokenSafe(Rule{Tag: "fp:nat:9:1", Chain: ChainSrcNat, Action: "snat", OutIface: "[eth0]"}); err == nil {
+		t.Fatal("非 to 字段的方括号必须被拒绝")
+	}
+}
+
 // TestNftApplyRebuildsTable 校验 Apply 采用「删表+重建」而非 flush：
 // flush 会留下命名 set（meter），旧限速元素会被同名新规则复用。
 func TestNftApplyRebuildsTable(t *testing.T) {

@@ -425,6 +425,20 @@ handle_path /.well-known/acme-challenge/* {
     down: 'bg-destructive',
     unknown: 'bg-muted-foreground/40',
   };
+
+  // 剪贴板在 http 明文页面（非安全上下文）不可用：给出明确提示而不是静默失败
+  async function copyText(text: string) {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前浏览器环境不支持剪贴板（需 HTTPS 或 localhost），请手动选择复制');
+      }
+      await navigator.clipboard.writeText(text);
+      toast.success('已复制到剪贴板');
+    } catch (e) {
+      toast.error(e instanceof Error ? `复制失败: ${e.message}` : '复制失败');
+    }
+  }
+
 </script>
 
 <div class="animate-fade-up space-y-4">
@@ -962,7 +976,7 @@ handle_path /.well-known/acme-challenge/* {
     </div>
     <pre class="max-h-72 overflow-auto rounded-lg border border-border/60 bg-foreground/[0.03] p-3.5 font-mono text-[11.5px] leading-relaxed">{snippetKind === 'nginx' ? nginxSnippet : caddySnippet}</pre>
     <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => { navigator.clipboard.writeText(snippetKind === 'nginx' ? nginxSnippet : caddySnippet); toast.success('已复制到剪贴板'); }}>复制</Button>
+      <Button variant="outline" onclick={() => { copyText(snippetKind === 'nginx' ? nginxSnippet : caddySnippet) }}>复制</Button>
       <Button variant="outline" onclick={() => (snippetOpen = false)}>关闭</Button>
     </Dialog.Footer>
   </Dialog.Content>
@@ -1034,7 +1048,7 @@ handle_path /.well-known/acme-challenge/* {
         <pre class="h-80 overflow-auto rounded-lg border border-border/60 bg-foreground/[0.03] p-3.5 font-mono text-[11.5px] leading-relaxed">{cfGenerated}</pre>
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" class="h-8 text-[12px]" onclick={appendGenerated}>追加到编辑区末尾</Button>
-          <Button size="sm" variant="outline" class="h-8 text-[12px]" onclick={() => { navigator.clipboard.writeText(cfGenerated); toast.success('已复制到剪贴板'); }}>复制</Button>
+          <Button size="sm" variant="outline" class="h-8 text-[12px]" onclick={() => { copyText(cfGenerated) }}>复制</Button>
           <span class="text-[10.5px] text-muted-foreground">
             只追加，不替换——文件里已有的内容会全部保留
           </span>
@@ -1068,7 +1082,7 @@ handle_path /.well-known/acme-challenge/* {
     {/if}
 
     <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => { navigator.clipboard.writeText(cfEdit); toast.success('已复制到剪贴板'); }}>
+      <Button variant="outline" onclick={() => { copyText(cfEdit) }}>
         <Copy size={13} /> 复制
       </Button>
       <Button variant="outline" disabled={!cfEdit} onclick={downloadCaddyfile}>

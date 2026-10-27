@@ -62,7 +62,7 @@
     if (!valid || submitting) return;
     submitting = true;
     try {
-      const payload = { ...form, port: form.port.trim(), enabled: true };
+      const payload = { ...form, port: form.port.trim(), enabled: editing ? editing.enabled : true };
       if (editing) await backend.updateRateLimit(editing.id, payload);
       else await backend.createRateLimit(payload);
       createOpen = false;

@@ -66,7 +66,9 @@ type rpDomainReq struct {
 	Enabled   *bool           `json:"enabled"`
 	CertPEM   string          `json:"cert_pem"`
 	KeyPEM    string          `json:"key_pem"`
-	Remark    string          `json:"remark"`
+	// Remark 用指针区分「没传」与「传空串」：域名卡片上的启停开关只发 {enabled}，
+	// 无条件赋值会把用户填写的备注清空。
+	Remark *string `json:"remark"`
 }
 
 // normalizeCaddyOpts 规整站点选项 JSON（空=全默认）。
@@ -145,7 +147,9 @@ func (s *Server) CreateProxyDomain(c *gin.Context) {
 		Domain: req.Domain, Enabled: enabled, TLSMode: req.TLSMode, Challenge: req.Challenge, CaddyOpts: opts,
 		CertPEM: req.CertPEM, KeyPEM: req.KeyPEM,
 		CertStatus: map[string]string{"auto": "pending", "manual": "ok", "none": "none"}[req.TLSMode],
-		Remark:     req.Remark,
+	}
+	if req.Remark != nil {
+		d.Remark = *req.Remark
 	}
 	if err := s.App.Store.CreateRPDomain(d); err != nil {
 		respErr(c, 500, err)
@@ -216,7 +220,10 @@ func (s *Server) UpdateProxyDomain(c *gin.Context) {
 	if req.Enabled != nil {
 		d.Enabled = *req.Enabled
 	}
-	d.Remark = req.Remark
+	// 只有显式传入 remark 才更新（启停开关只发 {enabled}，不应清空备注）
+	if req.Remark != nil {
+		d.Remark = *req.Remark
+	}
 	if err := s.App.Store.UpdateRPDomain(d); err != nil {
 		respErr(c, 500, err)
 		return

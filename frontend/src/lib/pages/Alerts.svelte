@@ -40,7 +40,7 @@
   // 编辑状态（每渠道一张表单）
   let tgForm = $state({ bot_token: '', chat_id: '' });
   let whForm = $state({ url: '', method: 'POST' });
-  let smForm = $state({ host: '', port: 587, username: '', password: '', from: '', to: '', use_tls: true });
+  let smForm = $state({ host: '', port: 587, username: '', password: '', from: '', to: '', use_tls: false });
   let events = $state<string[]>(['apply_fail', 'drift', 'danger_pending', 'health_down', 'rollback']);
   let enabledMap = $state<Record<string, boolean>>({});
   let testing = $state<Record<string, boolean>>({});
@@ -57,7 +57,7 @@
           const cfg = JSON.parse(a.config_json);
           if (a.channel === 'telegram') tgForm = { bot_token: cfg.bot_token ?? '', chat_id: cfg.chat_id ?? '' };
           if (a.channel === 'webhook') whForm = { url: cfg.url ?? '', method: cfg.method ?? 'POST' };
-          if (a.channel === 'smtp') smForm = { host: cfg.host ?? '', port: cfg.port ?? 587, username: cfg.username ?? '', password: cfg.password ?? '', from: cfg.from ?? '', to: cfg.to ?? '', use_tls: cfg.use_tls ?? true };
+          if (a.channel === 'smtp') smForm = { host: cfg.host ?? '', port: cfg.port ?? 587, username: cfg.username ?? '', password: cfg.password ?? '', from: cfg.from ?? '', to: cfg.to ?? '', use_tls: cfg.use_tls ?? false };
           const ev = JSON.parse(a.events_json);
           if (Array.isArray(ev) && ev.length > 0) events = ev;
         } catch { /* 忽略 */ }
@@ -199,7 +199,16 @@
                 </div>
                 <div class="grid gap-1.5">
                   <Label class="text-[11.5px]">端口</Label>
-                  <Input type="number" bind:value={smForm.port} class="h-8 font-num text-[12px]" />
+                  <Input
+                    type="number"
+                    bind:value={smForm.port}
+                    class="h-8 font-num text-[12px]"
+                    onchange={() => {
+                      // 465 = 隐式 TLS；587 = STARTTLS（后端按 use_tls 选择）
+                      if (smForm.port === 465) smForm.use_tls = true;
+                      if (smForm.port === 587) smForm.use_tls = false;
+                    }}
+                  />
                 </div>
               </div>
               <div class="grid grid-cols-2 gap-2">
@@ -215,6 +224,15 @@
               <div class="grid gap-1.5">
                 <Label class="text-[11.5px]">收件人（逗号分隔）</Label>
                 <Input placeholder="ops@example.com" bind:value={smForm.to} class="h-8 font-mono text-[12px]" />
+              </div>
+              <div class="grid gap-1.5">
+                <Label class="text-[11.5px]">发件人 <span class="text-muted-foreground/70">（留空=用户名）</span></Label>
+                <Input placeholder="firepanel@example.com" bind:value={smForm.from} class="h-8 font-mono text-[12px]" />
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <Switch checked={smForm.use_tls} onCheckedChange={(v) => (smForm.use_tls = v)} />
+                <span class="text-[12px]">隐式 TLS（465）</span>
+                <span class="text-[11px] text-muted-foreground">关闭则用 587 的 STARTTLS</span>
               </div>
             </div>
           {/if}

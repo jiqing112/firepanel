@@ -37,6 +37,20 @@
     });
   });
 
+  // 封禁倒计时：每秒推进 now，并在有封禁到期时重新拉取（否则到期条目一直显示）
+  let now = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => {
+      now = Date.now();
+      const expired = banned.some((e) => {
+        if (!e.expires_at) return false;
+        return new Date(e.expires_at.replace(' ', 'T')).getTime() <= now;
+      });
+      if (expired) load();
+    }, 1000);
+    return () => clearInterval(t);
+  });
+
   /* ---------- 内置方案库（固定名称，按名称判定启用状态） ---------- */
   interface Builtin {
     key: string;
@@ -211,7 +225,7 @@
 
   function remainOf(e: IPListEntry): string {
     if (!e.expires_at) return '—';
-    const ms = new Date(e.expires_at.replace(' ', 'T')).getTime() - Date.now();
+    const ms = new Date(e.expires_at.replace(' ', 'T')).getTime() - now;
     if (ms <= 0) return '到期中';
     const s = Math.floor(ms / 1000);
     return s > 90 ? `${Math.floor(s / 60)} 分钟` : `${s} 秒`;

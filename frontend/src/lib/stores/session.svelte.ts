@@ -1,11 +1,18 @@
 /** 会话状态：真实 JWT 认证 + 首次初始化检测。 */
-import { backend, setToken, getToken, connectWS, type User } from '$lib/api';
+import { backend, setToken, getToken, connectWS, setUnauthorizedHandler, type User } from '$lib/api';
 import { navigate } from '$lib/router.svelte';
 
 export const session = $state<{ user: User | null; checked: boolean; needsSetup: boolean }>({
   user: null,
   checked: false,
   needsSetup: false,
+});
+
+// 任意接口返回 401（token 过期、账号被删/改密）时清空内存会话。
+// 否则路由守卫看到「user 仍在」会把人从 /login 弹回 /dashboard，
+// 而那边立刻又 401 —— 形成登录页与仪表盘之间的无限跳转。
+setUnauthorizedHandler(() => {
+  session.user = null;
 });
 
 /** 启动时恢复会话：有 token 则校验，无 token 则检查是否需要初始化。 */

@@ -352,6 +352,11 @@ func (m *Manager) Reload(ctx context.Context, cfgs []DomainConfig) error {
 				m.emit("proxy_caddy_error", "Caddyfile 下发失败（原文件未改动）", err.Error())
 				return err
 			}
+			if res.Skipped {
+				// 内容没变：不写盘、不备份、不重载（避免每次启动产生一份 .bak）
+				m.log.Info("Caddyfile 无变化，跳过写入与重载", "domains", len(next), "mode", res.Mode.Label())
+				break
+			}
 			detail := fmt.Sprintf("%d 个域名 · %s", len(next), res.Mode.Label())
 			if res.Backup != "" {
 				detail += " · 备份 " + res.Backup
