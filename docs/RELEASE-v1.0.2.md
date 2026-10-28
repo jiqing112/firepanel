@@ -1,5 +1,7 @@
 # FirePanel v1.0.2 发布说明（2026-10-28）
 
+> 更新：**v1.0.3 已发布**（2026-10-28），与 v1.0.2 功能一致，仅修正产物未注入版本号的问题。`releases/latest` 现已指向 v1.0.3，下载即 v1.0.3。
+
 本轮后端审计与安全加固的修复已随 `v1.0.2` 发布。逐条问题清单见 [`FIXES.md`](./FIXES.md)（编号 #1–#55），本文是面向升级者的发布口径。
 
 ## 发布信息
@@ -64,6 +66,6 @@ curl -s http://127.0.0.1:18088/api/v1/bootstrap
 
 ## 已知问题
 
-- **Release 产物未注入版本号**：`.github/workflows/release.yml` 与 `deploy/Dockerfile` 的 `go build` 未带 `-ldflags` 版本注入，因此包内 `./firepanel -version` 输出 `firepanel dev`（本地 `scripts/build.sh` 构建正常）。核对版本请以 Release 页面 tag 为准；计划在下一个 tag 修正
+- **Release 产物版本号注入 —— 已在 v1.0.3 修正**：`.github/workflows/release.yml` 现按 tag 名解析并注入 `-X main.version`，`deploy/Dockerfile` 增加 `ARG VERSION`。因此 `v1.0.2` 及更早下载的包 `./firepanel -version` 仍输出 `firepanel dev`，v1.0.3 起输出 `firepanel v1.0.3`（本地 `scripts/build.sh` 构建一直正常）
 - JSON 备份不含用户与设置（JWT 密钥、Basic Auth、DNS-01 凭据）；反代手动证书会连同私钥写入备份，需按密钥保管
 - nft-only 且 INPUT 策略为 drop 的主机：安装脚本的放行规则可能被宿主自己的 base chain 覆盖，需在宿主防火墙配置中显式放行面板端口
