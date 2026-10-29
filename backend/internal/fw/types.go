@@ -16,6 +16,7 @@ type Rule struct {
 	Chain    string `json:"chain"`     // input|forward|dstnat|srcnat
 	Family   string `json:"family"`    // ipv4|ipv6
 	Proto    string `json:"proto"`     // tcp|udp|""（任意）
+	CtState  string `json:"ct_state"`  // conntrack 状态匹配，如 "RELATED,ESTABLISHED"；空=不限
 	Src      string `json:"src"`       // IP/CIDR，空=任意
 	Dst      string `json:"dst"`       // IP/CIDR，空=任意
 	DstPort  string `json:"dst_port"`  // "80" 或 "30000-30010"，空=任意

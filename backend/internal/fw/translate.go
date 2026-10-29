@@ -29,7 +29,7 @@ func ParseTag(tag string) (kind string, id int64, seq int, ok bool) {
 }
 
 // BuildRules 将期望状态翻译为与后端无关的规则序列。
-// 规则顺序即应用顺序：白名单 → 黑名单 → 转发（DNAT + FORWARD 放行）。
+// 规则顺序即应用顺序：白名单 → 黑名单 → 转发（DNAT + FORWARD 放行 + 回程放行）。
 // 标签 seq 按规则局部编号，保证同一规则在多次同步间标签稳定（命中映射不漂移）。
 func BuildRules(st *DesiredState) []Rule {
 	var rules []Rule
@@ -102,6 +102,7 @@ func BuildRules(st *DesiredState) []Rule {
 	}
 
 	// 4. 端口转发：nat DNAT + forward 放行
+	hasForward := false
 	for _, f := range st.Forwards {
 		if !f.Enabled || f.DstIP == "" {
 			continue
@@ -110,6 +111,7 @@ func BuildRules(st *DesiredState) []Rule {
 		if !ok {
 			continue
 		}
+		hasForward = true
 		protos := []string{f.Protocol}
 		if f.Protocol == "both" {
 			protos = []string{"tcp", "udp"}
@@ -134,6 +136,16 @@ func BuildRules(st *DesiredState) []Rule {
 				Action: "accept", Comment: f.Name,
 			})
 		}
+	}
+	if hasForward {
+		// 回程放行：FORWARD 默认策略为 DROP 的机器（Docker 会设置为 DROP 且
+		// 其 ESTABLISHED 放行仅限 docker0）上，只有去程 accept 时目标回包
+		// 会在链尾被默认策略丢弃，表现为转发"半通"（去包有计数、客户端无响应）。
+		// Family 留空表示 v4/v6 都渲染。
+		rules = append(rules, Rule{
+			Tag: "fp:est:0:1", Chain: ChainFwd, Family: "",
+			CtState: "RELATED,ESTABLISHED", Action: "accept", Comment: "established",
+		})
 	}
 
 	// 5. NAT：SNAT / MASQUERADE（srcnat 链）

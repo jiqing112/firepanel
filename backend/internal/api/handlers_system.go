@@ -139,6 +139,17 @@ func (s *Server) CheckDriftNow(c *gin.Context) {
 	c.JSON(200, gin.H{"report": rep})
 }
 
+// HealNow 手动触发防火墙自愈体检（链挂接检查 + 漂移自动修复）。
+func (s *Server) HealNow(c *gin.Context) {
+	rep := s.App.HealthCheckNow()
+	if rep == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "体检执行失败，请查看面板日志"})
+		return
+	}
+	s.audit(c, "firewall_heal", "system", nil, rep)
+	c.JSON(200, gin.H{"report": rep})
+}
+
 func (s *Server) ForceSync(c *gin.Context) {
 	if s.App.HasPendingDanger() {
 		c.JSON(http.StatusConflict, gin.H{"error": "存在待确认的高危变更，请先确认或撤销"})

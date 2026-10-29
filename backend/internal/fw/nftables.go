@@ -119,6 +119,9 @@ func renderNftRule(r Rule) string {
 			parts = append(parts, "meta l4proto "+r.Proto)
 		}
 	}
+	if r.CtState != "" {
+		parts = append(parts, "ct state "+strings.ToLower(r.CtState))
+	}
 	// 面板规则统一挂 counter 以支持命中统计
 	parts = append(parts, "counter")
 	if r.Limit != nil {

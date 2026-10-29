@@ -120,6 +120,7 @@ func (s *Server) registerRoutes() {
 	auth.GET("/system/info", s.SystemInfo)
 	auth.GET("/system/drift", s.GetDrift)
 	auth.POST("/system/drift/check", s.requireAdmin(), s.CheckDriftNow)
+	auth.POST("/system/firewall/heal", s.requireAdmin(), s.HealNow)
 	auth.POST("/system/sync", s.requireAdmin(), s.ForceSync)
 	auth.POST("/system/danger/confirm", s.requireAdmin(), s.ConfirmDanger)
 	auth.POST("/system/danger/cancel", s.requireAdmin(), s.CancelDanger)

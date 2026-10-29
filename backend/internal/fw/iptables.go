@@ -129,7 +129,7 @@ func (b *IPTablesBackend) Apply(ctx context.Context, rules []Rule) error {
 		filter.WriteString("-F FPANEL_INPUT\n-F FPANEL_FORWARD\n")
 		nat.WriteString("-F FPANEL_DNAT\n-F FPANEL_SNAT\n")
 		for _, r := range rules {
-			if r.Family != family {
+			if r.Family != "" && r.Family != family {
 				continue
 			}
 			if r.Chain == ChainDstNat || r.Chain == ChainSrcNat {
@@ -162,6 +162,9 @@ func renderIPTRule(r Rule) string {
 	}
 	if r.Proto != "" {
 		sb.WriteString(" -p " + r.Proto)
+	}
+	if r.CtState != "" {
+		sb.WriteString(" -m conntrack --ctstate " + r.CtState)
 	}
 	if r.DstPort != "" {
 		sb.WriteString(" --dport " + iptPort(r.DstPort))

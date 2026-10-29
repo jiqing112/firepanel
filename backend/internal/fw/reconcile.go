@@ -334,23 +334,43 @@ func (rc *Reconciler) Drift(ctx context.Context, st *DesiredState) (*DriftReport
 	return diffRules(expected, snap), nil
 }
 
+// iptChainToAbstract iptables 内核链名 → 抽象链名（diffRules 对比用）。
+var iptChainToAbstract = map[string]string{
+	"FPANEL_INPUT":   ChainInput,
+	"FPANEL_FORWARD": ChainFwd,
+	"FPANEL_DNAT":    ChainDstNat,
+	"FPANEL_SNAT":    ChainSrcNat,
+}
+
+// normChain 链名归一化：iptables 后端的内核链名映射回抽象名，nft 后端本就是抽象名。
+func normChain(c string) string {
+	if a, ok := iptChainToAbstract[c]; ok {
+		return a
+	}
+	return c
+}
+
 // diffRules 对比期望规则序列与内核快照（按后端语法规范化后比较）。
 func diffRules(expected []Rule, snap *Snapshot) *DriftReport {
 	rep := &DriftReport{}
 	byChain := map[string][]KernelRule{}
 	for _, kr := range snap.Rules {
-		byChain[kr.Chain] = append(byChain[kr.Chain], kr)
+		byChain[normChain(kr.Chain)] = append(byChain[normChain(kr.Chain)], kr)
 	}
 	expByChain := map[string][]Rule{}
 	for _, r := range expected {
 		expByChain[r.Chain] = append(expByChain[r.Chain], r)
 	}
 	for chain, exps := range expByChain {
+		// iptables 双栈时同一规则在 v4/v6 各渲染一次、tag 相同，按 tag 去重后对比
+		seenTag := map[string]bool{}
 		var kerns []KernelRule
 		for _, k := range byChain[chain] {
-			if k.Tag != "" {
-				kerns = append(kerns, k)
+			if k.Tag == "" || seenTag[k.Tag] {
+				continue
 			}
+			seenTag[k.Tag] = true
+			kerns = append(kerns, k)
 		}
 		for i, e := range exps {
 			if i >= len(kerns) {

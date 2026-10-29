@@ -11,6 +11,7 @@
 - **IP 黑白名单**：单 IP / CIDR 批量管理，标签分组、过期自动解封、txt/csv/json 导入导出
 - **反向代理**：HTTP/HTTPS 域名 + 路径路由，WebSocket 透传，上游健康检查，Let's Encrypt 自动证书（certmagic）与手动证书；**双引擎面板内切换**（内置零依赖引擎 / **Caddy 托管**：面板只维护 `managed begin/end` 托管段 → validate → 自动备份 `.bak-时间戳` → 合并写入 → 优雅重载，重启 Caddy 不丢配置；**不整盘覆盖**，已有站点/snippets 原样保留，Caddyfile 读取的是服务器实际文件、可预览/追加/手改）+ 环境探测推荐（80/443 占用检测 → HTTP-01 / TLS-ALPN / DNS-01 挑战矩阵），DNS-01 内置 Cloudflare / 阿里云 / DNSPod 凭据，支持泛域名与寄生前置配置生成；站点级压缩/安全头/访问日志开关；IP 短期证书（shortlived，内置引擎）
 - **防火墙规则视图**：内核实时规则、命中计数、链挂接状态、**漂移检测**与一键重新同步
+- **防火墙自愈**：Docker / incus / firewalld / iptables-restore 等外部工具启动、重启或重载时会重设 FORWARD 策略、flush 规则、拔掉面板链挂接——转发/封禁悄悄失效的常见根因（典型：Docker 把 FORWARD 策略设为 DROP，且其回程放行仅覆盖 docker0，面板转发的回包被丢）。面板周期体检「链是否齐全挂接 + 内核规则是否与期望一致」，异常即自动重建并重放期望规则（`sync.auto_heal` 默认开，`sync.heal_interval` 默认 60s；待确认高危变更期间自动让路）；修复广播 `auto_heal` 事件可接告警，也可 `POST /api/v1/system/firewall/heal` 手动触发
 - **限速防护**：按 IP / 总量限速（hashlimit / nft meter）、单 IP 并发连接限制（connlimit / ct count），防 CC 与扫描
 - **NAT 管理**：SNAT / MASQUERADE 多网卡出口策略（ip_forward 未开启时一键开启并持久化）
 - **定时任务**：cron 计划启停转发规则、清理过期名单、周期同步
@@ -23,7 +24,7 @@
 ## 架构一句话
 
 SQLite 存「期望状态」→ reconciler 翻译为面板自有链（`FPANEL_*` / `table inet firepanel`）→ 后端原子应用；
-漂移检测对比期望与内核；面板永不触碰 Docker / firewalld / incus 等已有规则。
+漂移检测对比期望与内核；面板永不触碰 Docker / firewalld / incus 等已有规则，但会**周期体检并自愈**这些工具对面板自身链与规则的破坏（见「防火墙自愈」）。
 
 ## 安装部署
 

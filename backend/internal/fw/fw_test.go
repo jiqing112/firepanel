@@ -21,9 +21,9 @@ func TestBuildRulesForwards(t *testing.T) {
 	}
 	rules := BuildRules(st)
 
-	// 期望：白名单1 + 黑名单1 + 转发1(tcp DNAT+FWD=2) + 转发2(tcp+udp → 4) = 8
-	if len(rules) != 8 {
-		t.Fatalf("规则数量错误，期望 8，得到 %d: %+v", len(rules), rules)
+	// 期望：白名单1 + 黑名单1 + 转发1(tcp DNAT+FWD=2) + 转发2(tcp+udp → 4) + 回程放行1 = 9
+	if len(rules) != 9 {
+		t.Fatalf("规则数量错误，期望 9，得到 %d: %+v", len(rules), rules)
 	}
 	if rules[0].Chain != ChainInput || rules[0].Action != "accept" {
 		t.Errorf("首条应为白名单 accept，得到 %+v", rules[0])
@@ -52,6 +52,25 @@ func TestBuildRulesForwards(t *testing.T) {
 	}
 	if rangeDnat == nil || rangeDnat.To != "192.168.1.102:30000-30010" {
 		t.Errorf("端口段 DNAT 错误: %+v", rangeDnat)
+	}
+	// 有转发时必须附带回程放行（ESTABLISHED,RELATED），否则 FORWARD 策略为
+	// DROP 的机器（如 Docker 主机）上回包被丢，转发不通
+	est := rules[8]
+	if est.Tag != "fp:est:0:1" || est.Chain != ChainFwd || est.Action != "accept" ||
+		est.CtState != "RELATED,ESTABLISHED" || est.Family != "" {
+		t.Errorf("回程放行规则错误: %+v", est)
+	}
+}
+
+func TestBuildRulesNoForwardNoEst(t *testing.T) {
+	// 无转发规则时不应附带回程放行（避免对面板未使用转发的机器产生额外放行）
+	rules := BuildRules(&DesiredState{
+		IPLists: []IPListSpec{{ID: 1, ListType: "black", IP: "203.0.113.9"}},
+	})
+	for _, r := range rules {
+		if r.Tag == "fp:est:0:1" {
+			t.Fatalf("无转发时不应生成回程放行规则: %+v", rules)
+		}
 	}
 }
 
@@ -169,6 +188,7 @@ func TestDriftNftSpec(t *testing.T) {
 	snap.Rules = append(snap.Rules,
 		KernelRule{Chain: ChainDstNat, Tag: "fp:fw:1:1", Spec: `tcp dport == 80 dnat to 192.168.1.100:8080`},
 		KernelRule{Chain: ChainFwd, Tag: "fp:fw:1:2", Spec: `ip daddr == 192.168.1.100 tcp dport == 8080 accept`},
+		KernelRule{Chain: ChainFwd, Tag: "fp:est:0:1", Spec: `ct state established,related accept`},
 	)
 	rep := diffRules(expected, snap)
 	if rep.Drifted {
@@ -190,6 +210,9 @@ func iptSpecOf(e Rule) string {
 	}
 	if e.DstPort != "" {
 		parts = append(parts, "--dport "+strings.ReplaceAll(e.DstPort, "-", ":"))
+	}
+	if e.CtState != "" {
+		parts = append(parts, "-m conntrack --ctstate "+e.CtState)
 	}
 	switch e.Action {
 	case "accept":

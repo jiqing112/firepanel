@@ -672,6 +672,49 @@ func (a *App) CachedDrift() *fw.DriftReport {
 	return a.drift
 }
 
+// HealthCheckNow 防火墙体检入口：检查面板链挂接与内核规则，发现被外部工具
+// （Docker / incus / firewalld / iptables-restore 等）破坏时自动重建。
+// 修复成功广播 auto_heal 事件，失败广播 auto_heal_fail（跳过待确认高危时仅记日志）。
+func (a *App) HealthCheckNow() *fw.HealthReport {
+	desired, err := a.Desired()
+	if err != nil {
+		a.Log.Warn("防火墙体检失败", "err", err)
+		return nil
+	}
+	rep, err := a.Rec.HealthCheck(context.Background(), desired)
+	if err != nil {
+		a.Log.Warn("防火墙体检失败", "err", err)
+		return nil
+	}
+	a.mu.Lock()
+	switch {
+	case rep.Remaining != nil:
+		a.drift = rep.Remaining
+	case rep.Repaired:
+		a.drift = &fw.DriftReport{}
+	case rep.Drift != nil:
+		a.drift = rep.Drift
+	}
+	a.mu.Unlock()
+
+	if rep.Repaired && rep.Error == "" {
+		a.Log.Warn("防火墙自愈：检测到面板规则被外部工具破坏，已自动修复", "missing", rep.MissingChains)
+		a.broadcast("events", fw.Event{
+			Type: "auto_heal", Timestamp: time.Now(),
+			Message: "防火墙自愈：面板规则被外部工具（Docker/firewalld 等）破坏，已自动修复",
+			Detail:  "缺失/异常: " + strings.Join(rep.MissingChains, ", "),
+		})
+	} else if rep.Error != "" && rep.Repaired {
+		a.Log.Error("防火墙自愈失败", "err", rep.Error)
+		a.broadcast("events", fw.Event{
+			Type: "auto_heal_fail", Timestamp: time.Now(),
+			Message: "防火墙自愈失败，请人工检查内核规则",
+			Detail:  rep.Error,
+		})
+	}
+	return rep
+}
+
 // IpForwardEnabled 检测内核 IPv4 转发是否开启（NAT/转发需要）。
 func (a *App) IpForwardEnabled() bool {
 	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
@@ -755,6 +798,23 @@ func (a *App) StartBackground(ctx context.Context) {
 			}
 		}
 	}()
+
+	// 防火墙自愈巡检：Docker / incus / firewalld 等外部工具启动、重启或重载时
+	// 可能重设 FORWARD 策略、flush 规则或拔掉面板链挂接；定期体检并自动重建
+	if a.Cfg.Sync.AutoHeal {
+		go func() {
+			t := time.NewTicker(a.Cfg.Sync.HealInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					a.HealthCheckNow()
+				}
+			}
+		}()
+	}
 
 	go func() {
 		t := time.NewTicker(30 * time.Second)

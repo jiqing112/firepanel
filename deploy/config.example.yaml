@@ -62,6 +62,15 @@ sync:
   danger_delay: 60s
   # 危险变更确认窗口（超时自动回滚）
   confirm_window: 90s
+  # ── 防火墙自愈 ──────────────────────────────────────────────
+  # Docker / incus / firewalld / iptables-restore 等外部工具在启动、重启或
+  # 重载时会改动共享内置链：重设 FORWARD 策略、flush 规则、拔掉面板链挂接
+  # （-j FPANEL_*），表现为转发/封禁悄悄失效。开启后面板周期体检：
+  # 链缺失/挂接被拔/规则漂移 → 自动重建并重放期望规则，同时广播事件可订阅告警。
+  # 存在待确认的高危变更时自动跳过，避免与延时生效/回滚流程竞争。
+  auto_heal: true
+  # 自愈体检周期
+  heal_interval: 60s
 
 logging:
   level: "info"

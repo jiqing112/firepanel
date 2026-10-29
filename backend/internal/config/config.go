@@ -73,6 +73,10 @@ type SyncConfig struct {
 	StatsInterval time.Duration `yaml:"stats_interval"` // 采样周期
 	DangerDelay   time.Duration `yaml:"danger_delay"`   // 危险规则延时生效窗口
 	ConfirmWindow time.Duration `yaml:"confirm_window"` // 应用后确认窗口，超时回滚
+	// AutoHeal 周期体检面板链挂接与内核规则，发现被 Docker / incus / firewalld
+	// 等外部工具破坏（拔挂接、删链、flush、漂移）时自动重建
+	AutoHeal     bool          `yaml:"auto_heal"`
+	HealInterval time.Duration `yaml:"heal_interval"` // 自愈体检周期
 }
 
 type LoggingConfig struct {
@@ -101,6 +105,8 @@ func defaults() *Config {
 			StatsInterval: 5 * time.Second,
 			DangerDelay:   60 * time.Second,
 			ConfirmWindow: 90 * time.Second,
+			AutoHeal:      true,
+			HealInterval:  60 * time.Second,
 		},
 		Logging: LoggingConfig{Level: "info"},
 		Proxy: ProxyConfig{
@@ -202,6 +208,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.Sync.ConfirmWindow <= 0 {
 		cfg.Sync.ConfirmWindow = 90 * time.Second
+	}
+	if cfg.Sync.HealInterval <= 0 {
+		cfg.Sync.HealInterval = 60 * time.Second
 	}
 	if cfg.Server.PanelHTTPSPort == "" {
 		cfg.Server.PanelHTTPSPort = ":8443"
