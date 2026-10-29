@@ -88,8 +88,8 @@ func TestHealthCheckRepairsUnhookedJump(t *testing.T) {
 		}
 		return healthV4Save, nil // 修复后：正常
 	})
-	// v6 恒为健康态：Init 探测 ip6tables 可用后 Snapshot 才会读 v6，
-	// 缺失检测由 v4 挂接被拔触发即可
+	// v6 恒为健康态：回归用例——iptables 按地址族各报一条同名视图，
+	// v4 挂接被拔而 v6 完好时，合并视图不得用 v6 遮蔽 v4 的缺失
 	fe.On("ip6tables-save", func([]string) (string, error) { return healthV6Save, nil })
 	// -C 全部返回失败 → Init 会重新 -I 插入挂接
 	fe.On("iptables -t", func(args []string) (string, error) {

@@ -22,8 +22,9 @@ type HealthReport struct {
 }
 
 // chainsHealthy 对照已知的四条面板链，提取缺失/未挂接的链。
-// iptables 后端 Snapshot 恒返回 4 条链视图；nftables 后端只列实际存在的链，
-// 表被删或链缺失时直接缺席，因此必须按已知集合反向核对。
+// iptables 后端按地址族各报告一条同名视图（v4/v6），必须全部健康才算健康——
+// 任何一族挂接被拔都要修复（否则该族流量在 FORWARD 策略 DROP 下被丢）；
+// nftables 后端只列实际存在的链，缺即为缺失。
 func chainsHealthy(snap *Snapshot) (missing []string) {
 	refOf := map[string]string{
 		ChainInput:  "filter/INPUT",
@@ -31,15 +32,23 @@ func chainsHealthy(snap *Snapshot) (missing []string) {
 		ChainDstNat: "nat/PREROUTING",
 		ChainSrcNat: "nat/POSTROUTING",
 	}
-	seen := map[string]ChainView{}
+	views := map[string][]ChainView{}
 	for _, c := range snap.Chains {
 		// iptables 视图用内核链名（FPANEL_*），nft 用抽象名，统一归一化
-		seen[normChain(c.Name)] = c
+		name := normChain(c.Name)
+		views[name] = append(views[name], c)
 	}
 	for name, ref := range refOf {
-		c, ok := seen[name]
-		if !ok || !c.Exists || !c.Hooked {
+		vs, ok := views[name]
+		if !ok {
 			missing = append(missing, name+"("+ref+")")
+			continue
+		}
+		for _, c := range vs {
+			if !c.Exists || !c.Hooked {
+				missing = append(missing, name+"("+ref+")")
+				break
+			}
 		}
 	}
 	return missing
