@@ -509,6 +509,19 @@ func (a *App) Desired() (*fw.DesiredState, error) {
 			SrcCIDR: n.SrcCIDR, OutIface: n.OutIface, ToAddr: n.ToAddr, Enabled: true,
 		})
 	}
+	ports, err := a.Store.ListPortAllowRules()
+	if err != nil {
+		return nil, fmt.Errorf("读取入站放行规则: %w", err)
+	}
+	for _, p := range ports {
+		if !p.Enabled {
+			continue
+		}
+		st.Ports = append(st.Ports, fw.PortSpec{
+			ID: p.ID, Name: p.Name, Proto: p.Proto, Port: p.Port,
+			SrcCIDR: p.SrcCIDR, Enabled: true,
+		})
+	}
 	return st, nil
 }
 

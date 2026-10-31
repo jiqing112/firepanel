@@ -21,6 +21,7 @@ type Bundle struct {
 	Alerts      []AlertConfig    `json:"alerts"`
 	Jails       []JailConfig     `json:"jails"`
 	PortRecords []PortRecord     `json:"port_records"`
+	PortAllows  []PortAllowRule  `json:"port_allow_rules"`
 	RPDomains   []RPDomainBackup `json:"rp_domains"`
 	RPRoutes    []RPRoute        `json:"rp_routes"`
 }
@@ -74,6 +75,9 @@ func (s *Store) ExportBundle() (Bundle, error) {
 	if b.PortRecords, err = s.ListPortRecords(); err != nil {
 		return b, fmt.Errorf("读取端口台账: %w", err)
 	}
+	if b.PortAllows, err = s.ListPortAllowRules(); err != nil {
+		return b, fmt.Errorf("读取入站放行规则: %w", err)
+	}
 	domains, err := s.ListRPDomains()
 	if err != nil {
 		return b, fmt.Errorf("读取反代域名: %w", err)
@@ -91,7 +95,8 @@ func (s *Store) ExportBundle() (Bundle, error) {
 func (b Bundle) IsEmpty() bool {
 	return len(b.Forwards) == 0 && len(b.IPLists) == 0 && len(b.RateLimits) == 0 &&
 		len(b.NATRules) == 0 && len(b.Tasks) == 0 && len(b.Alerts) == 0 &&
-		len(b.Jails) == 0 && len(b.PortRecords) == 0 && len(b.RPDomains) == 0 && len(b.RPRoutes) == 0
+		len(b.Jails) == 0 && len(b.PortRecords) == 0 && len(b.PortAllows) == 0 &&
+		len(b.RPDomains) == 0 && len(b.RPRoutes) == 0
 }
 
 func ts(t time.Time) string {
@@ -143,6 +148,7 @@ func (s *Store) ReplaceAll(b Bundle) error {
 		`DELETE FROM alert_configs`,
 		`DELETE FROM jail_configs`,
 		`DELETE FROM port_records`,
+		`DELETE FROM port_allow_rules`,
 	} {
 		if _, err := tx.Exec(q); err != nil {
 			return fmt.Errorf("清空配置失败: %w", err)
@@ -223,6 +229,15 @@ func (s *Store) ReplaceAll(b Bundle) error {
 			(id,name,proto,port,group_tag,remark,created_at) VALUES(?,?,?,?,?,?,?)`,
 			idOrNil(p.ID), p.Name, p.Proto, p.Port, p.GroupTag, p.Remark, ts(p.CreatedAt)); err != nil {
 			return fmt.Errorf("恢复端口记录 %d: %w", p.ID, err)
+		}
+	}
+	for i := range b.PortAllows {
+		p := b.PortAllows[i]
+		if _, err := tx.Exec(`INSERT INTO port_allow_rules
+			(id,name,proto,port,src_cidr,enabled,remark,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+			idOrNil(p.ID), p.Name, p.Proto, p.Port, p.SrcCIDR, boolIntStore(p.Enabled), p.Remark,
+			ts(p.CreatedAt)); err != nil {
+			return fmt.Errorf("恢复入站放行规则 %d: %w", p.ID, err)
 		}
 	}
 	for i := range b.RPDomains {

@@ -175,6 +175,17 @@ export interface NATRule {
   created_at: string;
 }
 
+export interface PortAllowRule {
+  id: number;
+  name: string;
+  proto: 'tcp' | 'udp' | 'both';
+  port: string;
+  src_cidr: string;
+  enabled: boolean;
+  remark: string;
+  created_at: string;
+}
+
 export interface ScheduledTask {
   id: number;
   name: string;
@@ -505,6 +516,16 @@ export const backend = {
   createNAT: (r: Partial<NATRule>) => api.post<{ item: NATRule; sync: SyncResult }>('/nat-rules', r),
   updateNAT: (id: number, r: Partial<NATRule>) => api.put<{ item: NATRule; sync: SyncResult }>(`/nat-rules/${id}`, r),
   deleteNAT: (id: number) => api.delete<{ ok: boolean; sync: SyncResult }>(`/nat-rules/${id}`),
+
+  /* 入站放行（FPANEL_INPUT ACCEPT） */
+  portAllow: () => api.get<{ items: PortAllowRule[] }>('/port-allow'),
+  createPortAllow: (r: Partial<PortAllowRule>) =>
+    api.post<{ item: PortAllowRule; sync: SyncResult }>('/port-allow', r),
+  updatePortAllow: (id: number, r: Partial<PortAllowRule>) =>
+    api.put<{ item: PortAllowRule; sync: SyncResult }>(`/port-allow/${id}`, r),
+  togglePortAllow: (id: number, enabled: boolean) =>
+    api.patch<{ sync: SyncResult }>(`/port-allow/${id}/enabled`, { enabled }),
+  deletePortAllow: (id: number) => api.delete<{ sync: SyncResult }>(`/port-allow/${id}`),
 
   /* 端口（监听扫描 + 记录台账） */
   listeningPorts: () => api.get<{ items: ListenPort[] }>('/ports/listening'),

@@ -62,12 +62,24 @@ type NATSpec struct {
 	Enabled  bool   `json:"enabled"`
 }
 
+// PortSpec 期望状态中的入站放行规则（INPUT 链 ACCEPT）。
+// 用于 INPUT 默认策略为 DROP 的机器上打开对外服务端口。
+type PortSpec struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Proto   string `json:"proto"`    // tcp|udp|both
+	Port    string `json:"port"`     // "80" 或 "8000-8010"
+	SrcCIDR string `json:"src_cidr"` // 空 = 任意来源
+	Enabled bool   `json:"enabled"`
+}
+
 // DesiredState 期望状态：由 store 层装载，翻译为 []Rule。
 type DesiredState struct {
 	Forwards   []ForwardSpec   `json:"forwards"`
 	IPLists    []IPListSpec    `json:"ip_lists"`
 	RateLimits []RateLimitSpec `json:"rate_limits"`
 	NAT        []NATSpec       `json:"nat"`
+	Ports      []PortSpec      `json:"ports"`
 }
 
 type ForwardSpec struct {

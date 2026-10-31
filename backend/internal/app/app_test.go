@@ -159,3 +159,42 @@ func newTestAppWithStore(t *testing.T, fb fw.FirewallBackend, st *store.Store) *
 	rec.Events = a.BroadcastEvent
 	return a
 }
+
+// 入站放行规则要能从 store 装配进期望状态，并真正下发到 INPUT 链的 ACCEPT 规则上。
+func TestDesiredIncludesPortAllow(t *testing.T) {
+	fb := &fakeBackend{}
+	a := newTestApp(t, fb)
+
+	if err := a.Store.CreatePortAllowRule(&store.PortAllowRule{
+		Name: "web", Proto: "tcp", Port: "80", Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建放行规则: %v", err)
+	}
+	// 停用的不应下发
+	if err := a.Store.CreatePortAllowRule(&store.PortAllowRule{
+		Name: "off", Proto: "tcp", Port: "8080", Enabled: false,
+	}); err != nil {
+		t.Fatalf("创建停用规则: %v", err)
+	}
+
+	desired, err := a.Desired()
+	if err != nil {
+		t.Fatalf("装配期望状态: %v", err)
+	}
+	if len(desired.Ports) != 1 || desired.Ports[0].Port != "80" {
+		t.Fatalf("停用的规则不应进入期望状态: %+v", desired.Ports)
+	}
+
+	if _, err := a.Sync(""); err != nil {
+		t.Fatalf("同步: %v", err)
+	}
+	var found bool
+	for _, r := range fb.rules {
+		if r.Chain == fw.ChainInput && r.Action == "accept" && r.DstPort == "80" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("放行规则未下发到 INPUT 链: %+v", fb.rules)
+	}
+}

@@ -16,6 +16,7 @@
   import Backup from '$lib/pages/Backup.svelte';
   import RateLimit from '$lib/pages/RateLimit.svelte';
   import NAT from '$lib/pages/NAT.svelte';
+  import Allow from '$lib/pages/Allow.svelte';
   import Fail2ban from '$lib/pages/Fail2ban.svelte';
   import Tasks from '$lib/pages/Tasks.svelte';
   import Alerts from '$lib/pages/Alerts.svelte';
@@ -81,6 +82,8 @@
         return { comp: Logs, titleKey: 'nav.logs', subKey: '操作审计与实时事件流' };
       case '/nat':
         return { comp: NAT, titleKey: 'nav.nat', subKey: 'SNAT / MASQUERADE 出口策略' };
+      case '/allow':
+        return { comp: Allow, titleKey: 'nav.allow', subKey: 'INPUT 链入站放行 · 打开对外服务端口' };
       case '/ratelimit':
         return { comp: RateLimit, titleKey: 'nav.ratelimit', subKey: '限速与连接数限制 · 防 CC / 扫描' };
       case '/fail2ban':
@@ -132,6 +135,8 @@
             <Logs />
           {:else if meta.comp === NAT}
             <NAT />
+          {:else if meta.comp === Allow}
+            <Allow />
           {:else if meta.comp === RateLimit}
             <RateLimit />
           {:else if meta.comp === Fail2ban}

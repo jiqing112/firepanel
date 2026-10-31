@@ -108,6 +108,50 @@ func TestBuildRulesDomainUnresolved(t *testing.T) {
 	}
 }
 
+func TestBuildRulesPortAllow(t *testing.T) {
+	rules := BuildRules(&DesiredState{
+		IPLists:    []IPListSpec{{ID: 1, ListType: "black", IP: "203.0.113.9"}},
+		RateLimits: []RateLimitSpec{{ID: 1, Name: "rl", Proto: "tcp", Port: "22", Rate: 10, RateUnit: "minute", Enabled: true}},
+		Ports: []PortSpec{
+			{ID: 1, Name: "web", Proto: "tcp", Port: "80", Enabled: true},
+			{ID: 2, Name: "dns", Proto: "both", Port: "53", SrcCIDR: "10.0.0.0/8", Enabled: true},
+			{ID: 3, Name: "off", Proto: "tcp", Port: "8080", Enabled: false},
+		},
+	})
+
+	var allows []Rule
+	for _, r := range rules {
+		if r.Chain == ChainInput && r.Action == "accept" && strings.HasPrefix(r.Tag, "fp:pt:") {
+			allows = append(allows, r)
+		}
+	}
+	// tcp(web) + both(dns → tcp/udp) = 3；停用的不生成
+	if len(allows) != 3 {
+		t.Fatalf("放行规则数量错误，期望 3，得到 %d: %+v", len(allows), allows)
+	}
+	if allows[0].Proto != "tcp" || allows[0].DstPort != "80" || allows[0].Family != "" {
+		t.Errorf("未限定来源时应 v4/v6 都渲染且端口正确: %+v", allows[0])
+	}
+	if allows[1].DstPort != "53" || allows[1].Src != "10.0.0.0/8" || allows[1].Family != "ipv4" {
+		t.Errorf("限定来源时应按来源地址族渲染: %+v", allows[1])
+	}
+
+	// 放行必须排在限速之后：限速是「超限即 DROP」，放行若在前先 ACCEPT，
+	// 超限的包永远走不到限速规则，限速会完全失效。
+	lastRate, firstAllow := -1, -1
+	for i, r := range rules {
+		if strings.HasPrefix(r.Tag, "fp:rl:") {
+			lastRate = i
+		}
+		if firstAllow < 0 && strings.HasPrefix(r.Tag, "fp:pt:") {
+			firstAllow = i
+		}
+	}
+	if lastRate < 0 || firstAllow < 0 || firstAllow < lastRate {
+		t.Errorf("放行规则应排在限速之后: lastRate=%d firstAllow=%d", lastRate, firstAllow)
+	}
+}
+
 func TestResolveDomainsFallsBackToCache(t *testing.T) {
 	rc := NewReconciler(NewIPTablesBackend(NewFakeExecutor()), []int{22}, time.Second, time.Second)
 	calls := 0

@@ -15,6 +15,7 @@ export const zh = {
   'nav.ports': '端口详情',
   'nav.traffic': '流量监控',
   'nav.firewall': '防火墙规则',
+  'nav.allow': '端口放行',
   'nav.iplists': 'IP 名单',
   'nav.proxy': '反向代理',
   'nav.nat': 'NAT 管理',

@@ -29,7 +29,7 @@ func ParseTag(tag string) (kind string, id int64, seq int, ok bool) {
 }
 
 // BuildRules 将期望状态翻译为与后端无关的规则序列。
-// 规则顺序即应用顺序：白名单 → 黑名单 → 转发（DNAT + FORWARD 放行 + 回程放行）。
+// 规则顺序即应用顺序：白名单 → 黑名单 → 限速 → 入站放行 → 转发（DNAT + FORWARD 放行 + 回程放行）→ NAT。
 // 标签 seq 按规则局部编号，保证同一规则在多次同步间标签稳定（命中映射不漂移）。
 func BuildRules(st *DesiredState) []Rule {
 	var rules []Rule
@@ -101,7 +101,40 @@ func BuildRules(st *DesiredState) []Rule {
 		}
 	}
 
-	// 4. 端口转发：nat DNAT + forward 放行
+	// 4. 入站放行（INPUT 链，限速之后）
+	// 必须排在限速之后：限速规则是「超限即 DROP」，若放行在它前面先 ACCEPT，
+	// 超限的包就再也走不到限速规则，限速会完全失效。
+	// Family 留空（未限定来源时）表示 v4/v6 都渲染。
+	for _, p := range st.Ports {
+		if !p.Enabled {
+			continue
+		}
+		src := ""
+		family := ""
+		if p.SrcCIDR != "" {
+			src = normalizeCIDR(p.SrcCIDR)
+			if src == "" {
+				continue
+			}
+			fam, ok := familyOf(src)
+			if !ok {
+				continue
+			}
+			family = fam
+		}
+		protos := []string{p.Proto}
+		if p.Proto == "both" {
+			protos = []string{"tcp", "udp"}
+		}
+		for _, proto := range protos {
+			rules = append(rules, Rule{
+				Tag: next("pt", p.ID), Chain: ChainInput, Family: family,
+				Proto: proto, Src: src, DstPort: p.Port, Action: "accept", Comment: p.Name,
+			})
+		}
+	}
+
+	// 5. 端口转发：nat DNAT + forward 放行
 	hasForward := false
 	for _, f := range st.Forwards {
 		if !f.Enabled || f.DstIP == "" {
@@ -159,7 +192,7 @@ func BuildRules(st *DesiredState) []Rule {
 		})
 	}
 
-	// 5. NAT：SNAT / MASQUERADE（srcnat 链）
+	// 6. NAT：SNAT / MASQUERADE（srcnat 链）
 	for _, n := range st.NAT {
 		if !n.Enabled {
 			continue

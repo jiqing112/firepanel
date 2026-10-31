@@ -206,12 +206,14 @@ func (s *Server) RestoreBundle(c *gin.Context) {
 		"forwards": len(b.Forwards), "ip_lists": len(b.IPLists),
 		"rate_limits": len(b.RateLimits), "nat_rules": len(b.NATRules),
 		"tasks": len(b.Tasks), "alerts": len(b.Alerts), "jails": len(b.Jails),
-		"port_records": len(b.PortRecords), "rp_domains": len(b.RPDomains), "rp_routes": len(b.RPRoutes),
+		"port_records": len(b.PortRecords), "port_allow_rules": len(b.PortAllows),
+		"rp_domains": len(b.RPDomains), "rp_routes": len(b.RPRoutes),
 	})
 	c.JSON(200, gin.H{
 		"sync": res, "forwards": len(b.Forwards), "ip_lists": len(b.IPLists),
 		"rate_limits": len(b.RateLimits), "nat_rules": len(b.NATRules),
 		"tasks": len(b.Tasks), "alerts": len(b.Alerts), "jails": len(b.Jails),
-		"port_records": len(b.PortRecords), "rp_domains": len(b.RPDomains), "rp_routes": len(b.RPRoutes),
+		"port_records": len(b.PortRecords), "port_allow_rules": len(b.PortAllows),
+		"rp_domains": len(b.RPDomains), "rp_routes": len(b.RPRoutes),
 	})
 }
