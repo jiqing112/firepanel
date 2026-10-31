@@ -30,3 +30,6 @@ certs/
 backend/.gocache/
 .vscode/
 .idea/
+
+# 界面原型截图：体积大（约 7.9MB），改由 Release 附件分发，见 docs/PROTOTYPE.md
+docs/prototype/
