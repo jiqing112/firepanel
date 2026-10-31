@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search, Plus, MoreHorizontal, Pencil, Trash2, ArrowRight, Globe, ArrowDownToLine, ArrowUpFromLine, TriangleAlert } from '@lucide/svelte';
+  import { Search, Plus, MoreHorizontal, Pencil, Trash2, ArrowRight, Globe, ArrowDownToLine, ArrowUpFromLine, TriangleAlert, Info } from '@lucide/svelte';
   import { fade } from 'svelte/transition';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
@@ -218,6 +218,14 @@
       <Plus size={16} />
       新增转发
     </Button>
+  </div>
+
+  <div class="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+    <Info size={14} class="mt-0.5 shrink-0 text-info" />
+    <span>
+      转发会自动附带源地址转换（MASQUERADE），让回包经本机返回 ——
+      在云厂商 / 运营商 NAT、公网 IP 不在网卡上的机器上同样可用，无需手工加 SNAT 规则。
+    </span>
   </div>
 
   {#if loading}

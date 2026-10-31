@@ -33,6 +33,7 @@ COMMIT
 -A PREROUTING -j FPANEL_DNAT
 -A POSTROUTING -j FPANEL_SNAT
 -A FPANEL_DNAT -p tcp -m tcp --dport 80 -m comment --comment "fp:fw:1:1" -j DNAT --to-destination 192.168.1.100:8080
+-A FPANEL_SNAT -d 192.168.1.100/32 -m comment --comment "fp:fw:1:3" -j MASQUERADE
 COMMIT
 `
 
@@ -184,7 +185,8 @@ const nftHealthJSON = `{"nftables":[
  {"chain":{"family":"inet","table":"firepanel","name":"forward","rule":[
    {"expr":[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"192.168.1.100"}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":8080}},{"counter":{"packets":0,"bytes":0}},{"accept":null}],"comment":"fp:fw:1:2"},
    {"expr":[{"match":{"op":"==","left":{"payload":{"protocol":"ct","field":"state"}},"right":["established","related"]}},{"counter":{"packets":0,"bytes":0}},{"accept":null}],"comment":"fp:est:0:1"}]}},
- {"chain":{"family":"inet","table":"firepanel","name":"srcnat"}}
+ {"chain":{"family":"inet","table":"firepanel","name":"srcnat","rule":[
+   {"expr":[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"192.168.1.100"}},{"counter":{"packets":0,"bytes":0}},{"masquerade":null}],"comment":"fp:fw:1:3"}]}}
 ]}`
 
 // TestHealthCheckRepairsNftTableMissing 模拟 nft 表被外部工具整体删除：

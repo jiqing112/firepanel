@@ -140,6 +140,14 @@ func (b *IPTablesBackend) Apply(ctx context.Context, rules []Rule) error {
 		}
 		script := "*filter\n" + filter.String() + "COMMIT\n*nat\n" + nat.String() + "COMMIT\n"
 		if _, err := b.exec.RunStdin(ctx, b.restoreBinFor(family), script, "--noflush"); err != nil {
+			// 外部工具（firewalld reload / iptables -F / 手工清理）删掉面板链后，
+			// "-F FPANEL_*" 会因链不存在而整批失败。与 nft 后端保持一致：
+			// 重建链与挂接后重试一次，让「用户点保存」也能自愈，而不是等下一轮体检。
+			if initErr := b.initFamily(ctx, family); initErr == nil {
+				if _, err2 := b.exec.RunStdin(ctx, b.restoreBinFor(family), script, "--noflush"); err2 == nil {
+					continue
+				}
+			}
 			return fmt.Errorf("%s 应用失败: %w", b.restoreBinFor(family), err)
 		}
 	}

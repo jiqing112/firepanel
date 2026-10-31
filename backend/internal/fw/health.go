@@ -89,7 +89,7 @@ func (rc *Reconciler) HealthCheck(ctx context.Context, st *DesiredState) (*Healt
 		rep.Error = "重建面板链失败: " + err.Error()
 		return rep, nil
 	}
-	if err := rc.backend.Apply(ctx, rules); err != nil {
+	if err := rc.applyRules(ctx, rules); err != nil {
 		rep.Error = "重放规则失败: " + err.Error()
 		return rep, nil
 	}

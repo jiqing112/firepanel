@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,12 @@ type Reconciler struct {
 	pending   *DangerOp
 	watchdogs map[string]*time.Timer
 
+	// dnsCache 记录域名上一次成功解析的结果。DNS 抖动（运营商劫持、递归服务器
+	// 超时）时用上次结果兜底，避免一条规则解析失败就让整次同步失败——那会让
+	// 用户改别的规则也保存不了，且已有转发被迫停留在旧状态。
+	dnsMu    sync.Mutex
+	dnsCache map[string]string
+
 	Events func(Event) // 事件回调（可为空）
 }
 
@@ -71,6 +78,7 @@ func NewReconciler(backend FirewallBackend, sshPorts []int, dangerDelay, confirm
 		confirmWindow: confirmWindow,
 		resolve:       defaultResolve,
 		watchdogs:     map[string]*time.Timer{},
+		dnsCache:      map[string]string{},
 	}
 }
 
@@ -96,11 +104,74 @@ func (rc *Reconciler) ResolveDomains(ctx context.Context, st *DesiredState) (*De
 		}
 		ips, err := rc.resolve(f.DstDomain)
 		if err != nil || len(ips) == 0 {
+			// 解析失败时回退到上一次成功结果：单条规则的 DNS 抖动不应
+			// 让整次同步失败（否则改任何别的规则都会保存不了）。
+			if cached := rc.cachedIP(f.DstDomain); cached != "" {
+				f.DstIP = cached
+				continue
+			}
+			if err == nil {
+				err = errors.New("没有返回任何地址")
+			}
 			return nil, fmt.Errorf("解析域名 %s 失败: %v", f.DstDomain, err)
 		}
 		f.DstIP = ips[0].String()
+		rc.rememberIP(f.DstDomain, f.DstIP)
 	}
 	return &out, nil
+}
+
+// cachedIP 读取域名上一次成功解析的 IP（无记录返回空串）。
+func (rc *Reconciler) cachedIP(domain string) string {
+	rc.dnsMu.Lock()
+	defer rc.dnsMu.Unlock()
+	return rc.dnsCache[domain]
+}
+
+// rememberIP 记录域名解析结果，供下次解析失败时兜底。
+func (rc *Reconciler) rememberIP(domain, ip string) {
+	rc.dnsMu.Lock()
+	defer rc.dnsMu.Unlock()
+	rc.dnsCache[domain] = ip
+}
+
+// applyRules 下发规则前先确保内核允许转发。
+func (rc *Reconciler) applyRules(ctx context.Context, rules []Rule) error {
+	ensureForwarding(rules)
+	return rc.backend.Apply(ctx, rules)
+}
+
+// ensureForwarding 端口转发依赖内核转发开关。
+// 最小化系统默认常为 0，且重启后会被 sysctl 复位；面板每次下发含 DNAT 的
+// 规则前确保打开，避免「规则全在、就是不通」这类最难排查的故障。
+// 直接读写 /proc，不依赖 sysctl 命令是否存在（精简镜像里常被裁掉）。
+func ensureForwarding(rules []Rule) {
+	need4, need6 := false, false
+	for _, r := range rules {
+		if r.Action != "dnat" {
+			continue
+		}
+		if r.Family == "ipv6" {
+			need6 = true
+		} else {
+			need4 = true
+		}
+	}
+	if need4 {
+		enableSysctl("/proc/sys/net/ipv4/ip_forward")
+	}
+	if need6 {
+		enableSysctl("/proc/sys/net/ipv6/conf/all/forwarding")
+	}
+}
+
+// enableSysctl 幂等写入 1；已为 1 时不做任何操作（避免无谓的内核写）。
+// 非 Linux 或权限不足时静默忽略：这是尽力而为的加固，不应阻断规则下发。
+func enableSysctl(path string) {
+	if b, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(b)) == "1" {
+		return
+	}
+	_ = os.WriteFile(path, []byte("1"), 0o644)
 }
 
 // SyncResult 同步结果：danger=true 表示进入延时生效队列。
@@ -157,7 +228,7 @@ func (rc *Reconciler) Sync(ctx context.Context, st *DesiredState, clientIP strin
 		}
 	}
 
-	if err := rc.backend.Apply(ctx, rules); err != nil {
+	if err := rc.applyRules(ctx, rules); err != nil {
 		rc.emit(Event{Type: "apply_fail", Message: "规则应用失败", Detail: err.Error()})
 		return nil, err
 	}
@@ -183,7 +254,7 @@ func (rc *Reconciler) applyPending(token string) error {
 		return fmt.Errorf("危险变更反序列化失败: %w", err)
 	}
 	rules := BuildRules(&st)
-	if err := rc.backend.Apply(context.Background(), rules); err != nil {
+	if err := rc.applyRules(context.Background(), rules); err != nil {
 		rc.clearPendingLocked()
 		rc.emit(Event{Type: "apply_fail", Token: token, Message: "危险变更应用失败", Detail: err.Error()})
 		return fmt.Errorf("危险变更应用失败: %w", err)
@@ -299,7 +370,7 @@ func (rc *Reconciler) rollbackLocked(reason string) Event {
 		return Event{Type: "rollback_fail", Token: token, Message: "无法回滚：没有可用的上一份快照", Detail: reason}
 	}
 	rules := BuildRules(target)
-	if err := rc.backend.Apply(context.Background(), rules); err != nil {
+	if err := rc.applyRules(context.Background(), rules); err != nil {
 		return Event{Type: "rollback_fail", Token: token, Message: "回滚失败", Detail: err.Error()}
 	}
 	rc.lastGood = target
@@ -494,6 +565,15 @@ func semOfKernelSpec(spec string) ruleSem {
 			sem.Action = "accept"
 		case f == "drop":
 			sem.Action = "drop"
+		case f == "masquerade":
+			// nft 摘要里 masquerade 是裸动词（iptables 侧走 -j MASQUERADE）
+			sem.Action = "masquerade"
+		case f == "snat":
+			// nft: "snat to 1.2.3.4"
+			sem.Action = "snat"
+			if nextField(fields, &i, f) == "to" {
+				sem.To = lower(nextField(fields, &i, f))
+			}
 		}
 	}
 	return sem

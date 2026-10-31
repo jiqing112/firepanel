@@ -2,6 +2,8 @@ package fw
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +23,10 @@ func TestBuildRulesForwards(t *testing.T) {
 	}
 	rules := BuildRules(st)
 
-	// 期望：白名单1 + 黑名单1 + 转发1(tcp DNAT+FWD=2) + 转发2(tcp+udp → 4) + 回程放行1 = 9
-	if len(rules) != 9 {
-		t.Fatalf("规则数量错误，期望 9，得到 %d: %+v", len(rules), rules)
+	// 期望：白名单1 + 黑名单1 + 转发1(tcp DNAT+FWD+MASQ=3) + 转发2(tcp+udp → 4 + MASQ 1)
+	// + 回程放行1 = 11
+	if len(rules) != 11 {
+		t.Fatalf("规则数量错误，期望 11，得到 %d: %+v", len(rules), rules)
 	}
 	if rules[0].Chain != ChainInput || rules[0].Action != "accept" {
 		t.Errorf("首条应为白名单 accept，得到 %+v", rules[0])
@@ -55,21 +58,42 @@ func TestBuildRulesForwards(t *testing.T) {
 	}
 	// 有转发时必须附带回程放行（ESTABLISHED,RELATED），否则 FORWARD 策略为
 	// DROP 的机器（如 Docker 主机）上回包被丢，转发不通
-	est := rules[8]
+	est := rules[10]
 	if est.Tag != "fp:est:0:1" || est.Chain != ChainFwd || est.Action != "accept" ||
 		est.CtState != "RELATED,ESTABLISHED" || est.Family != "" {
 		t.Errorf("回程放行规则错误: %+v", est)
 	}
+	// 每条启用的转发都必须带回程 SNAT（MASQUERADE），否则在公网 IP 不在网卡上
+	// 的机器（运营商/云厂商 NAT）上回包绕过本机，客户端收不到响应
+	var masq []Rule
+	for _, r := range rules {
+		if r.Chain == ChainSrcNat {
+			masq = append(masq, r)
+		}
+	}
+	if len(masq) != 2 {
+		t.Fatalf("应为每条启用转发生成 1 条 SNAT，期望 2 条，得到 %d: %+v", len(masq), masq)
+	}
+	if masq[0].Action != "masquerade" || masq[0].Dst != "192.168.1.100/32" {
+		t.Errorf("SNAT 规则错误: %+v", masq[0])
+	}
+	if masq[1].Dst != "192.168.1.102/32" {
+		t.Errorf("端口段转发的 SNAT 应只按目标 IP 匹配: %+v", masq[1])
+	}
 }
 
 func TestBuildRulesNoForwardNoEst(t *testing.T) {
-	// 无转发规则时不应附带回程放行（避免对面板未使用转发的机器产生额外放行）
+	// 无转发规则时不应附带回程放行（避免对面板未使用转发的机器产生额外放行），
+	// 同样不应生成回程 SNAT —— 否则会把本机发往该地址的流量也改写源地址
 	rules := BuildRules(&DesiredState{
 		IPLists: []IPListSpec{{ID: 1, ListType: "black", IP: "203.0.113.9"}},
 	})
 	for _, r := range rules {
 		if r.Tag == "fp:est:0:1" {
 			t.Fatalf("无转发时不应生成回程放行规则: %+v", rules)
+		}
+		if r.Chain == ChainSrcNat {
+			t.Fatalf("无转发时不应生成 SNAT 规则: %+v", r)
 		}
 	}
 }
@@ -82,6 +106,54 @@ func TestBuildRulesDomainUnresolved(t *testing.T) {
 	if len(rules) != 0 {
 		t.Errorf("未解析域名的规则应被跳过，得到 %d 条", len(rules))
 	}
+}
+
+func TestResolveDomainsFallsBackToCache(t *testing.T) {
+	rc := NewReconciler(NewIPTablesBackend(NewFakeExecutor()), []int{22}, time.Second, time.Second)
+	calls := 0
+	rc.resolve = func(domain string) ([]net.IP, error) {
+		calls++
+		if calls == 1 {
+			return []net.IP{net.ParseIP("192.168.1.100")}, nil
+		}
+		return nil, errors.New("temporary failure in name resolution")
+	}
+	st := &DesiredState{Forwards: []ForwardSpec{
+		{ID: 1, Protocol: "tcp", ListenPort: "80", DstDomain: "nas.example.net", DstPort: "80", Enabled: true},
+	}}
+	first, err := rc.ResolveDomains(context.Background(), st)
+	if err != nil {
+		t.Fatalf("首次解析不应失败: %v", err)
+	}
+	if got := first.Forwards[0].DstIP; got != "192.168.1.100" {
+		t.Fatalf("解析结果错误: %q", got)
+	}
+	// 第二次 DNS 抖动：应回退上次结果，而不是让整次同步失败
+	second, err := rc.ResolveDomains(context.Background(), st)
+	if err != nil {
+		t.Fatalf("DNS 抖动应回退缓存，不应让同步失败: %v", err)
+	}
+	if got := second.Forwards[0].DstIP; got != "192.168.1.100" {
+		t.Fatalf("应沿用上次解析结果，得到 %q", got)
+	}
+	// 从未成功解析过的域名仍然要报错，不能静默跳过
+	rc.resolve = func(domain string) ([]net.IP, error) {
+		return nil, errors.New("no such host")
+	}
+	unknown := &DesiredState{Forwards: []ForwardSpec{
+		{ID: 2, Protocol: "tcp", ListenPort: "81", DstDomain: "unknown.example.net", DstPort: "81", Enabled: true},
+	}}
+	if _, err := rc.ResolveDomains(context.Background(), unknown); err == nil {
+		t.Fatal("从未解析成功的域名应返回错误")
+	}
+}
+
+// TestEnsureForwarding 含 DNAT 的规则下发前应打开内核转发开关。
+func TestEnsureForwarding(t *testing.T) {
+	// 非 Linux 上 /proc 不存在，enableSysctl 静默忽略；此处只验证不 panic
+	// 且不含 DNAT 时不触碰内核。
+	ensureForwarding([]Rule{{Chain: ChainInput, Action: "accept"}})
+	ensureForwarding([]Rule{{Chain: ChainDstNat, Family: "ipv4", Action: "dnat", To: "1.2.3.4:80"}})
 }
 
 func TestIPTRender(t *testing.T) {
@@ -188,6 +260,7 @@ func TestDriftNftSpec(t *testing.T) {
 	snap.Rules = append(snap.Rules,
 		KernelRule{Chain: ChainDstNat, Tag: "fp:fw:1:1", Spec: `tcp dport == 80 dnat to 192.168.1.100:8080`},
 		KernelRule{Chain: ChainFwd, Tag: "fp:fw:1:2", Spec: `ip daddr == 192.168.1.100 tcp dport == 8080 accept`},
+		KernelRule{Chain: ChainSrcNat, Tag: "fp:fw:1:3", Spec: `ip daddr 192.168.1.100 masquerade`},
 		KernelRule{Chain: ChainFwd, Tag: "fp:est:0:1", Spec: `ct state established,related accept`},
 	)
 	rep := diffRules(expected, snap)

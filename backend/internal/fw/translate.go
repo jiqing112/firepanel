@@ -136,6 +136,17 @@ func BuildRules(st *DesiredState) []Rule {
 				Action: "accept", Comment: f.Name,
 			})
 		}
+		// 回程 SNAT（MASQUERADE）：DNAT 只改目标地址，源地址仍是客户端真实 IP。
+		// 当本机公网 IP 不在网卡上（云厂商 / 运营商的 1:1 NAT、内网 VPS）时，
+		// 目标主机会把回包直接发给客户端，绕过本机；客户端连的是本机公网地址，
+		// 收到的回包源地址对不上，内核直接丢弃 —— 表现为「转发半通」：
+		// 去程计数在涨、客户端永远收不到响应，conntrack 显示 UNREPLIED。
+		// 按目标地址做 MASQUERADE，让回程经过本机由 conntrack 还原，
+		// 且只影响发往该目标的流量，不碰本机其他出站。
+		rules = append(rules, Rule{
+			Tag: next("fw", f.ID), Chain: ChainSrcNat, Family: family,
+			Dst: normalizeCIDR(f.DstIP), Action: "masquerade", Comment: f.Name,
+		})
 	}
 	if hasForward {
 		// 回程放行：FORWARD 默认策略为 DROP 的机器（Docker 会设置为 DROP 且
