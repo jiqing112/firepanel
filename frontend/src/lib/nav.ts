@@ -42,10 +42,10 @@ export const navGroups: NavGroup[] = [
     labelKey: 'nav.group.traffic',
     items: [
       { path: '/forwards', labelKey: 'nav.forwards', icon: ArrowRightLeft },
+      { path: '/allow', labelKey: 'nav.allow', icon: ShieldCheck },
       { path: '/ports', labelKey: 'nav.ports', icon: EthernetPort },
       { path: '/traffic', labelKey: 'nav.traffic', icon: Waves },
       { path: '/firewall', labelKey: 'nav.firewall', icon: ShieldBan },
-      { path: '/allow', labelKey: 'nav.allow', icon: ShieldCheck },
       { path: '/iplists', labelKey: 'nav.iplists', icon: Globe },
       { path: '/proxy', labelKey: 'nav.proxy', icon: Network },
       { path: '/nat', labelKey: 'nav.nat', icon: ArrowRightLeft },
