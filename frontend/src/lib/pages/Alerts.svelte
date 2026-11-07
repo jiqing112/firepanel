@@ -3,12 +3,10 @@
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
-  import { Badge } from '$lib/components/ui/badge';
   import { Label } from '$lib/components/ui/label';
   import { Switch } from '$lib/components/ui/switch';
   import * as Checkbox from '$lib/components/ui/checkbox';
   import { toast } from 'svelte-sonner';
-  import EmptyState from '$lib/components/common/EmptyState.svelte';
   import { backend, type AlertConfig } from '$lib/api';
 
   const EVENT_OPTIONS = [
@@ -124,8 +122,7 @@
 <div class="animate-fade-up space-y-4">
   <!-- 事件订阅 -->
   <Card class="p-5 shadow-soft">
-    <h2 class="mb-1 text-sm font-semibold">事件订阅</h2>
-    <p class="mb-3 text-[12px] text-muted-foreground">勾选需要推送的事件类型，对全部已启用渠道生效。</p>
+    <h2 class="mb-3 text-sm font-semibold" title="对全部已启用渠道生效">事件订阅</h2>
     <div class="flex flex-wrap gap-x-6 gap-y-2.5">
       {#each EVENT_OPTIONS as opt (opt.value)}
         <label class="flex items-center gap-2 text-[13px]">
@@ -158,11 +155,6 @@
             </span>
             <div class="flex-1">
               <h3 class="text-sm font-semibold">{channelMeta[channel].label}</h3>
-              {#if existing}
-                <Badge variant="outline" class="mt-0.5 {existing.enabled ? 'bg-success/10 text-success ring-success/20' : 'bg-muted text-muted-foreground'}">
-                  {existing.enabled ? '已启用' : '已停用'}
-                </Badge>
-              {/if}
             </div>
             {#if existing}
               <Button variant="ghost" size="icon" class="size-7 text-muted-foreground" onclick={() => remove(existing)} aria-label="删除">
@@ -186,9 +178,13 @@
             <div class="grid gap-3">
               <div class="grid gap-1.5">
                 <Label class="text-[11.5px]">URL</Label>
-                <Input placeholder="https://hooks.example.com/firepanel" bind:value={whForm.url} class="h-8 font-mono text-[12px]" />
+                <Input
+                  placeholder="https://hooks.example.com/firepanel"
+                  bind:value={whForm.url}
+                  class="h-8 font-mono text-[12px]"
+                  title="以 POST JSON 推送：type / message / detail / time / text"
+                />
               </div>
-              <p class="text-[11px] text-muted-foreground">以 POST JSON 推送：type / message / detail / time / text</p>
             </div>
           {:else}
             <div class="grid gap-3">
@@ -226,13 +222,12 @@
                 <Input placeholder="ops@example.com" bind:value={smForm.to} class="h-8 font-mono text-[12px]" />
               </div>
               <div class="grid gap-1.5">
-                <Label class="text-[11.5px]">发件人 <span class="text-muted-foreground/70">（留空=用户名）</span></Label>
-                <Input placeholder="firepanel@example.com" bind:value={smForm.from} class="h-8 font-mono text-[12px]" />
+                <Label class="text-[11.5px]">发件人</Label>
+                <Input placeholder="firepanel@example.com" bind:value={smForm.from} class="h-8 font-mono text-[12px]" title="留空则用用户名作为发件人" />
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <Switch checked={smForm.use_tls} onCheckedChange={(v) => (smForm.use_tls = v)} />
-                <span class="text-[12px]">隐式 TLS（465）</span>
-                <span class="text-[11px] text-muted-foreground">关闭则用 587 的 STARTTLS</span>
+                <span class="text-[12px]" title="端口 465 自动开启；587 自动改为 STARTTLS">隐式 TLS</span>
               </div>
             </div>
           {/if}
@@ -250,9 +245,5 @@
         </Card>
       {/each}
     </div>
-  {/if}
-
-  {#if !loading && items.length === 0}
-    <EmptyState compact title="尚未配置告警渠道" desc="配置 Telegram / Webhook / 邮件后，异常事件会第一时间推送。" />
   {/if}
 </div>

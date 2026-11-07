@@ -103,7 +103,9 @@
       <Search size={15} class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted-foreground" />
       <Input placeholder="搜索规则…" bind:value={keyword} class="pl-9" />
     </div>
-    <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">共 {filtered.length} 条</span>
+    {#if keyword}
+      <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">共 {filtered.length} 条</span>
+    {/if}
     <Button onclick={openCreate}><Plus size={16} /> 新增限速</Button>
   </div>
 
@@ -114,10 +116,7 @@
       {/each}
     </div>
   {:else if filtered.length === 0}
-    <EmptyState
-      title="还没有限速规则"
-      desc="按 IP 或总量限制端口的新建连接速率与并发数，防 CC 攻击与端口扫描。规则作用于入站方向。"
-    >
+    <EmptyState title="还没有限速规则">
       {#snippet icon()}<Gauge size={22} />{/snippet}
       {#snippet action()}
         <Button onclick={openCreate}><Plus size={16} /> 新增限速</Button>
@@ -166,8 +165,7 @@
 <Dialog.Root bind:open={createOpen}>
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
-      <Dialog.Title>{editing ? '编辑限速规则' : '新增限速规则'}</Dialog.Title>
-      <Dialog.Description>超过速率的新建连接将被丢弃；可选同时限制单 IP 并发连接数。</Dialog.Description>
+      <Dialog.Title title="规则作用于入站方向">{editing ? '编辑限速规则' : '新增限速规则'}</Dialog.Title>
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid grid-cols-2 gap-3">
@@ -252,7 +250,7 @@
         </div>
       </div>
       <div class="grid gap-2">
-        <Label for="rl-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+        <Label for="rl-remark">备注</Label>
         <Input id="rl-remark" bind:value={form.remark} />
       </div>
     </div>

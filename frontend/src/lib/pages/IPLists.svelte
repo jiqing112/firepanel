@@ -143,7 +143,9 @@
         <Input placeholder="搜索 IP、标签或备注…" bind:value={keyword} class="pl-9" />
       </div>
 
-      <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">共 {filtered.length} 条</span>
+      {#if keyword}
+        <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">共 {filtered.length} 条</span>
+      {/if}
 
       <DropdownMenu.Root>
         <DropdownMenu.Trigger>
@@ -171,16 +173,11 @@
         </div>
       {:else if filtered.length === 0}
         {#if keyword}
-          <EmptyState compact title="没有匹配的条目" desc="换个关键词试试。">
+          <EmptyState compact title="没有匹配的条目">
             {#snippet icon()}<Search size={20} />{/snippet}
           </EmptyState>
         {:else}
-          <EmptyState
-            title={tab === 'black' ? '黑名单为空' : '白名单为空'}
-            desc={tab === 'black'
-              ? '拉黑恶意 IP 或网段后，其所有入站连接将被直接丢弃。'
-              : '放行可信网段后，这些来源的连接将优先允许。'}
-          >
+          <EmptyState title={tab === 'black' ? '黑名单为空' : '白名单为空'}>
             {#snippet icon()}<Globe size={22} />{/snippet}
             {#snippet action()}
               <Button onclick={() => (createOpen = true)}><Plus size={16} /> 新增{tab === 'black' ? '拉黑' : '放行'}</Button>
@@ -245,7 +242,9 @@
   <Dialog.Content class="sm:max-w-sm">
     <Dialog.Header>
       <Dialog.Title>新增{tab === 'black' ? '拉黑' : '放行'}</Dialog.Title>
-      <Dialog.Description>支持单个 IP 或 CIDR 网段，写入后立即生效。</Dialog.Description>
+      <Dialog.Description>
+        {tab === 'black' ? '来自该来源的入站连接将被直接丢弃。' : '放行的来源将被优先允许。'}
+      </Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid gap-2">
@@ -253,11 +252,11 @@
         <Input id="ip-addr" placeholder="203.0.113.9 或 10.0.0.0/24" bind:value={form.ip} class="font-mono" />
       </div>
       <div class="grid gap-2">
-        <Label for="ip-group">标签 <span class="text-muted-foreground/70">（可选）</span></Label>
+        <Label for="ip-group">标签</Label>
         <Input id="ip-group" placeholder="如 cc-attack、scanner" bind:value={form.group} />
       </div>
       <div class="grid gap-2">
-        <Label for="ip-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+        <Label for="ip-remark">备注</Label>
         <Input id="ip-remark" placeholder="说明" bind:value={form.remark} />
       </div>
     </div>
@@ -275,7 +274,7 @@
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>批量导入到{tab === 'black' ? '黑名单' : '白名单'}</Dialog.Title>
-      <Dialog.Description>每行一个 IP 或 CIDR；# 开头为注释；已存在的条目自动去重。</Dialog.Description>
+      <Dialog.Description>每行一个 IP 或 CIDR，已存在的条目自动跳过。</Dialog.Description>
     </Dialog.Header>
     <textarea
       class="h-48 w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12.5px] outline-none transition focus:ring-2 focus:ring-ring/40"

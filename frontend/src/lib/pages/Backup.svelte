@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { DatabaseBackup, Download, Upload, FileJson, FileCode, ShieldCheck } from '@lucide/svelte';
+  import { DatabaseBackup, Download, Upload, FileJson, FileCode } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
-  import { Badge } from '$lib/components/ui/badge';
   import { toast } from 'svelte-sonner';
-  import EmptyState from '$lib/components/common/EmptyState.svelte';
   import DangerDialog from '$lib/components/common/DangerDialog.svelte';
   import * as AlertDialog from '$lib/components/ui/alert-dialog';
   import { backend, downloadFile, type SyncResult } from '$lib/api';
@@ -104,14 +102,10 @@
       </span>
       <h2 class="text-sm font-semibold">备份导出</h2>
     </div>
-    <p class="mb-4 text-[12px] leading-relaxed text-muted-foreground">
-      面板 JSON 备份包含全部转发规则与黑/白名单（期望状态），可在另一台机器恢复；
-      内核格式导出用于与 iptables-save / nft 工作流互通。
-    </p>
-    <div class="grid gap-2.5">
+    <div class="mt-4 grid gap-2.5">
       <Button variant="outline" class="justify-start" onclick={downloadBackup} disabled={!isAdmin}>
         <FileJson size={15} class="text-primary" />
-        面板期望状态（JSON）— 推荐
+        面板期望状态（JSON）
       </Button>
       <Button variant="outline" class="justify-start" onclick={() => exportKernel('iptables-save')} disabled={!isAdmin}>
         <FileCode size={15} class="text-info" />
@@ -121,9 +115,6 @@
         <FileCode size={15} class="text-info" />
         nft ruleset 格式（nftables 后端）
       </Button>
-      {#if !isAdmin}
-        <p class="text-[11px] text-muted-foreground">备份导出需要管理员权限。</p>
-      {/if}
     </div>
   </Card>
 
@@ -136,8 +127,7 @@
       <h2 class="text-sm font-semibold">从备份恢复</h2>
     </div>
     <p class="mb-4 text-[12px] leading-relaxed text-muted-foreground">
-      选择面板 JSON 备份文件，确认后将<b class="text-warning">全量替换</b>当前结构化配置（转发/名单/限速/NAT/定时任务/告警/反代等）并同步内核。
-      涉及 SSH 端口的规则会走高危确认流程。操作前建议先下载一份当前备份。
+      恢复将<b class="text-warning">全量替换</b>当前配置，操作前建议先下载一份当前备份。
     </p>
     <input
       type="file"
@@ -151,6 +141,7 @@
       class="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed border-border/80 bg-card/50 px-6 py-10 transition-colors hover:border-primary/40 hover:bg-primary/[0.03] disabled:opacity-50"
       onclick={() => fileInput?.click()}
       disabled={restoring || !isAdmin}
+      title="恢复前会校验每条规则，非法条目将被拒绝"
     >
       <DatabaseBackup size={22} class="text-muted-foreground" />
       {#if restoring}
@@ -160,10 +151,6 @@
         <span class="text-[11px] text-muted-foreground">JSON 格式 · 最大 16MB</span>
       {/if}
     </button>
-    <div class="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-      <ShieldCheck size={13} class="text-success" />
-      恢复前会校验每条规则，非法条目将被拒绝
-    </div>
   </Card>
 
   <!-- 跨机迁移说明 -->
@@ -172,7 +159,7 @@
     <ol class="grid gap-2.5 text-[12.5px] leading-relaxed text-muted-foreground md:grid-cols-3">
       <li class="rounded-lg border border-border/60 bg-foreground/[0.015] px-4 py-3">
         <span class="font-num mr-1.5 font-semibold text-foreground">1</span>
-        在源机下载面板 JSON 备份（本页上方按钮）。
+        在源机下载面板 JSON 备份。
       </li>
       <li class="rounded-lg border border-border/60 bg-foreground/[0.015] px-4 py-3">
         <span class="font-num mr-1.5 font-semibold text-foreground">2</span>
@@ -183,11 +170,9 @@
         在目标机上传备份文件恢复，规则自动应用到新机内核。
       </li>
     </ol>
-    <div class="mt-3">
-      <Badge variant="outline" class="bg-info/5 text-[10.5px] text-info ring-info/20">
-        反代域名需在新机重新指向；自动证书在新机按需重新签发
-      </Badge>
-    </div>
+    <p class="mt-3 text-[11.5px] text-muted-foreground">
+      反代域名需在新机重新指向；自动证书在新机按需重新签发。
+    </p>
   </Card>
 </div>
 

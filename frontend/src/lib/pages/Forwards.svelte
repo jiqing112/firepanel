@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search, Plus, MoreHorizontal, Pencil, Trash2, ArrowRight, Globe, ArrowDownToLine, ArrowUpFromLine, TriangleAlert, Info } from '@lucide/svelte';
+  import { Search, Plus, MoreHorizontal, Pencil, Trash2, ArrowRight, Globe, ArrowDownToLine, ArrowUpFromLine, Lock } from '@lucide/svelte';
   import { fade } from 'svelte/transition';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
@@ -112,7 +112,7 @@
     if (sync.danger) {
       danger = { sync };
     } else {
-      toast.success(okMsg, { description: '已同步到内核' });
+      toast.success(okMsg);
     }
   }
 
@@ -210,22 +210,16 @@
       </Select.Content>
     </Select.Root>
 
-    <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">
-      共 {filtered.length} 条规则
-    </span>
+    {#if keyword || protoFilter !== 'all'}
+      <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">
+        共 {filtered.length} 条规则
+      </span>
+    {/if}
 
     <Button onclick={openCreate}>
       <Plus size={16} />
       新增转发
     </Button>
-  </div>
-
-  <div class="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-    <Info size={14} class="mt-0.5 shrink-0 text-info" />
-    <span>
-      转发会自动附带源地址转换（MASQUERADE），让回包经本机返回 ——
-      在云厂商 / 运营商 NAT、公网 IP 不在网卡上的机器上同样可用，无需手工加 SNAT 规则。
-    </span>
   </div>
 
   {#if loading}
@@ -236,17 +230,14 @@
     </div>
   {:else if filtered.length === 0}
     {#if keyword || protoFilter !== 'all'}
-      <EmptyState compact title="没有匹配的规则" desc="换个关键词，或清除筛选条件试试。">
+      <EmptyState compact title="没有匹配的规则">
         {#snippet icon()}<Search size={20} />{/snippet}
         {#snippet action()}
           <Button variant="outline" size="sm" onclick={() => { keyword = ''; protoFilter = 'all'; }}>清除筛选</Button>
         {/snippet}
       </EmptyState>
     {:else}
-      <EmptyState
-        title="还没有端口转发规则"
-        desc="创建第一条规则，将公网端口的流量转发到内网服务。支持 TCP / UDP / 双栈，以及域名目标自动解析。"
-      >
+      <EmptyState title="还没有端口转发规则">
         {#snippet icon()}<Globe size={22} />{/snippet}
         {#snippet action()}
           <Button onclick={openCreate}><Plus size={16} /> 新增转发</Button>
@@ -272,8 +263,9 @@
               {#if rule.remark}
                 <p class="mt-0.5 truncate text-[11.5px] text-muted-foreground">{rule.remark}</p>
               {:else if rule.src_ip}
-                <p class="mt-0.5 truncate text-[11px] text-muted-foreground/70">
-                  <span class="font-mono">{rule.src_ip}</span> · 仅允许该来源
+                <p class="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground/70" title="仅允许该来源的连接">
+                  <span class="font-mono">{rule.src_ip}</span>
+                  <Lock size={10} class="shrink-0" />
                 </p>
               {:else}
                 <p class="mt-0.5 text-[11px] text-muted-foreground/50">创建于 {relativeTime(rule.created_at)}</p>
@@ -337,7 +329,7 @@
     <Dialog.Header>
       <Dialog.Title>{editing ? '编辑转发规则' : '新增端口转发'}</Dialog.Title>
       <Dialog.Description>
-        配置后将自动写入内核并立即生效；涉及 SSH 端口的规则需要二次确认。
+        自动附带回程 MASQUERADE —— 云厂商 NAT、公网 IP 不在网卡上的机器同样可用，无需手工加 SNAT。
       </Dialog.Description>
     </Dialog.Header>
 
@@ -414,24 +406,18 @@
       {:else}
         <div class="grid gap-2">
           <Label for="f-dstdomain">目标域名</Label>
-          <Input id="f-dstdomain" placeholder="nas.example.net" bind:value={form.dst_domain} class="font-mono" />
-          <p class="text-[11px] text-muted-foreground">面板将按周期自动解析域名并更新转发规则</p>
+          <Input id="f-dstdomain" placeholder="nas.example.net" bind:value={form.dst_domain} class="font-mono" title="按周期自动解析并更新转发规则" />
         </div>
       {/if}
 
       <div class="grid gap-2">
-        <Label for="f-src">来源限制 <span class="text-muted-foreground/70">（可选，IP/CIDR）</span></Label>
+        <Label for="f-src">来源限制</Label>
         <Input id="f-src" placeholder="如 192.168.0.0/16，留空不限制" bind:value={form.src_ip} class="font-mono" />
       </div>
 
       <div class="grid gap-2">
-        <Label for="f-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+        <Label for="f-remark">备注</Label>
         <Input id="f-remark" placeholder="用途说明" bind:value={form.remark} />
-      </div>
-
-      <div class="mt-1 flex items-start gap-2 rounded-lg bg-info/5 px-3 py-2.5 text-[11.5px] text-muted-foreground">
-        <TriangleAlert size={14} class="mt-0.5 shrink-0 text-info" />
-        规则写入面板自有链（FPANEL_*），不触碰系统与其他服务的规则。
       </div>
     </div>
 

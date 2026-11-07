@@ -88,9 +88,7 @@
 </script>
 
 <div class="animate-fade-up space-y-4">
-  <div class="flex items-center gap-2.5">
-    <span class="font-num text-xs text-muted-foreground">共 {items.length} 个任务</span>
-    <span class="ml-auto"></span>
+  <div class="flex justify-end">
     <Button onclick={() => (createOpen = true)}><Plus size={16} /> 新增任务</Button>
   </div>
 
@@ -101,10 +99,7 @@
       {/each}
     </div>
   {:else if items.length === 0}
-    <EmptyState
-      title="还没有定时任务"
-      desc="按 cron 计划自动启停转发规则、清理过期名单或同步内核。例如：工作时间停用游戏端口转发。"
-    >
+    <EmptyState title="还没有定时任务">
       {#snippet icon()}<CalendarClock size={22} />{/snippet}
       {#snippet action()}
         <Button onclick={() => (createOpen = true)}><Plus size={16} /> 新增任务</Button>
@@ -161,12 +156,12 @@
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>新增定时任务</Dialog.Title>
-      <Dialog.Description>使用 5 段 cron 表达式：分 时 日 月 周（如 0 9 * * 1-5 = 工作日每天 9 点）。</Dialog.Description>
+      <Dialog.Description>分 时 日 月 周 · 如 0 9 * * 1-5 = 工作日每天 9 点</Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid gap-2">
         <Label for="tk-name">任务名称</Label>
-        <Input id="tk-name" bind:value={form.name} />
+        <Input id="tk-name" placeholder="如：工作时间停用游戏端口转发" bind:value={form.name} />
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="grid gap-2">
@@ -174,7 +169,7 @@
           <Input id="tk-cron" placeholder="0 2 * * *" bind:value={form.cron_expr} class="font-mono" />
         </div>
         <div class="grid gap-2">
-          <Label for="tk-target">目标规则 <span class="text-muted-foreground/70">（转发类动作）</span></Label>
+          <Label for="tk-target">目标规则</Label>
           <Select.Root
             type="single"
             value={form.target_id > 0 ? String(form.target_id) : ''}
@@ -203,7 +198,7 @@
         </Select.Root>
       </div>
       <div class="grid gap-2">
-        <Label for="tk-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+        <Label for="tk-remark">备注</Label>
         <Input id="tk-remark" bind:value={form.remark} />
       </div>
     </div>

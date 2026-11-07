@@ -62,10 +62,7 @@
   <div class="relative w-full max-w-[400px]" in:fly={{ y: 14, duration: 350, easing: cubicOut }}>
     <div class="mb-7 flex flex-col items-center gap-3 text-center">
       <BrandMark size={46} />
-      <div>
-        <h1 class="text-[19px] font-semibold tracking-tight">初始化 {t('app.name')}</h1>
-        <p class="mt-1 text-[12.5px] text-muted-foreground">创建管理员账号，开始管理这台服务器</p>
-      </div>
+      <h1 class="text-[19px] font-semibold tracking-tight">初始化 {t('app.name')}</h1>
     </div>
 
     <div class="rounded-2xl border border-border/70 bg-card p-6 shadow-lift">
@@ -118,7 +115,7 @@
 
     <div class="mt-4 flex items-center justify-center gap-1.5 text-center text-[11.5px] text-muted-foreground/80">
       <ShieldCheck size={13} />
-      密码以 bcrypt 加密存储，仅创建一次
+      管理员密码仅创建一次，请妥善保管
     </div>
     <div class="mt-1 flex justify-center text-muted-foreground/40">
       <Flame size={12} />

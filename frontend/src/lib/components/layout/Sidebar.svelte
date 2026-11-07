@@ -38,11 +38,6 @@
                 {/if}
                 <item.icon size={17} strokeWidth={1.9} class="shrink-0 transition-transform duration-150 group-hover:scale-105" />
                 <span>{t(item.labelKey as never)}</span>
-                {#if item.phase}
-                  <span class="ml-auto rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    P{item.phase}
-                  </span>
-                {/if}
               </a>
             </li>
           {/each}
@@ -63,10 +58,7 @@
     }}
   >
     <BrandMark size={30} />
-    <div class="leading-tight">
-      <div class="text-[15px] font-semibold tracking-tight">{t('app.name')}</div>
-      <div class="text-[10.5px] text-muted-foreground">{t('app.slogan')}</div>
-    </div>
+    <div class="text-[15px] font-semibold tracking-tight">{t('app.name')}</div>
   </a>
 {/snippet}
 
@@ -74,18 +66,6 @@
 <aside class="fixed inset-y-0 left-0 z-30 hidden w-[236px] flex-col border-r border-sidebar-border bg-sidebar lg:flex">
   {@render brand()}
   {@render navList()}
-  <div class="border-t border-sidebar-border p-3">
-    <div class="flex items-center gap-2.5 rounded-lg bg-foreground/[0.03] px-3 py-2.5">
-      <span class="relative flex h-2 w-2">
-        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60"></span>
-        <span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span>
-      </span>
-      <div class="min-w-0 flex-1 leading-tight">
-        <div class="truncate text-xs font-medium">nftables 后端</div>
-        <div class="truncate text-[10.5px] text-muted-foreground">规则同步正常</div>
-      </div>
-    </div>
-  </div>
 </aside>
 
 <!-- 移动端抽屉 -->

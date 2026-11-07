@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Activity, ArrowDownToLine, ShieldCheck, Zap, Server, Cpu, Timer, Layers, WifiOff } from '@lucide/svelte';
+  import { Activity, ArrowDownToLine, ShieldCheck, Zap, Server, Cpu, Layers, WifiOff } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
@@ -55,7 +55,7 @@
   async function block(ip: string) {
     try {
       await backend.createIPList({ list_type: 'black', ip_or_cidr: ip, remark: '仪表盘手动封禁' });
-      toast.success(`已将 ${ip} 加入黑名单`, { description: '规则已下发内核，立即生效' });
+      toast.success(`已将 ${ip} 加入黑名单`);
       load();
     } catch (e) {
       const err = e as { status?: number; message: string };
@@ -90,7 +90,6 @@
       <div class="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 class="text-sm font-semibold tracking-tight">流量趋势</h2>
-          <p class="mt-0.5 text-xs text-muted-foreground">今日采样 · 实时更新</p>
         </div>
         <div class="flex items-center gap-4 text-[11.5px]">
           <span class="flex items-center gap-1.5">
@@ -107,11 +106,7 @@
       {#if data && trafficPoints.length >= 2}
         <TrafficArea data={trafficPoints} height={264} />
       {:else if data}
-        <EmptyState
-          compact
-          title="采样数据积累中"
-          desc="面板启动后每分钟记录一次流量样本，稍后回来即可看到曲线。"
-        >
+        <EmptyState compact title="采样积累中 · 每分钟记录一次">
           {#snippet icon()}<WifiOff size={20} />{/snippet}
         </EmptyState>
       {:else}
@@ -123,14 +118,13 @@
       <div class="mb-4 flex items-center justify-between">
         <div>
           <h2 class="text-sm font-semibold tracking-tight">规则命中排行</h2>
-          <p class="mt-0.5 text-xs text-muted-foreground">按内核计数器累计</p>
         </div>
       </div>
       {#if data}
         {#if data.hit_ranks.length > 0}
           <BarRank items={data.hit_ranks.map((r) => ({ label: r.name, value: r.hits }))} />
         {:else}
-          <EmptyState compact title="暂无命中数据" desc="创建转发规则并产生流量后，这里会显示命中排行。" />
+          <EmptyState compact title="暂无命中数据" />
         {/if}
       {:else}
         <div class="animate-pulse space-y-4 pt-2">
@@ -147,7 +141,6 @@
       <div class="mb-3 flex items-center justify-between">
         <div>
           <h2 class="text-sm font-semibold tracking-tight">规则命中明细</h2>
-          <p class="mt-0.5 text-xs text-muted-foreground">来自防火墙计数器（数据包数）</p>
         </div>
         <Button variant="ghost" size="sm" onclick={load}>刷新</Button>
       </div>
@@ -175,7 +168,7 @@
           </table>
         </div>
       {:else if data}
-        <EmptyState compact title="还没有规则命中" desc="转发或黑名单规则被流量命中后，会出现在这里。" />
+        <EmptyState compact title="还没有规则命中" />
       {:else}
         <div class="animate-pulse space-y-3">
           {#each Array(4) as _, i (i)}
@@ -189,29 +182,21 @@
       <h2 class="mb-4 text-sm font-semibold tracking-tight">系统信息</h2>
       {#if data}
         <dl class="space-y-3.5 text-[13px]">
-          <div class="flex items-center gap-3">
-            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server size={15} /></span>
-            <div class="min-w-0 flex-1">
-              <dt class="text-[11.5px] text-muted-foreground">防火墙后端</dt>
-              <dd class="font-medium capitalize">{data.backend}</dd>
+            <div class="flex items-center gap-3">
+              <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server size={15} /></span>
+              <div class="min-w-0 flex-1">
+                <dt class="text-[11.5px] text-muted-foreground">防火墙后端</dt>
+                <dd class="font-medium capitalize">{data.backend}</dd>
+              </div>
             </div>
-            <Badge variant="outline" class="bg-success/10 text-success ring-success/20">运行中</Badge>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-info/10 text-info"><Cpu size={15} /></span>
-            <div class="min-w-0 flex-1">
-              <dt class="text-[11.5px] text-muted-foreground">采样窗口</dt>
-              <dd class="font-num font-medium">{data.samples.length} 个样本</dd>
+            <div class="flex items-center gap-3">
+              <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-info/10 text-info"><Cpu size={15} /></span>
+              <div class="min-w-0 flex-1">
+                <dt class="text-[11.5px] text-muted-foreground">采样窗口</dt>
+                <dd class="font-num font-medium">{data.samples.length} 个样本</dd>
+              </div>
             </div>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-success/10 text-success"><Timer size={15} /></span>
-            <div class="min-w-0 flex-1">
-              <dt class="text-[11.5px] text-muted-foreground">实时连接</dt>
-              <dd class="font-num font-medium">{fmtNum(data.conn_count)} 条</dd>
-            </div>
-          </div>
-          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-3">
             <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-warning/15 text-warning"><Layers size={15} /></span>
             <div class="min-w-0 flex-1">
               <dt class="text-[11.5px] text-muted-foreground">出站峰值（今日）</dt>
@@ -224,7 +209,6 @@
         <div class="mt-5 border-t border-border/60 pt-4">
           <div class="mb-2 flex items-center justify-between text-[11.5px] text-muted-foreground">
             <span>连接数走势</span>
-            <span class="font-num">实时</span>
           </div>
           <Sparkline values={connTrend} />
         </div>

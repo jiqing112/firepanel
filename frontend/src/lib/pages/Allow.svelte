@@ -1,10 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Search, Plus, Pencil, Trash2, ShieldCheck, Info, CloudOff } from '@lucide/svelte';
+  import { Search, Plus, Pencil, Trash2, ShieldCheck, CloudOff } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
-  import { Badge } from '$lib/components/ui/badge';
   import { Label } from '$lib/components/ui/label';
   import { Switch } from '$lib/components/ui/switch';
   import * as Dialog from '$lib/components/ui/dialog';
@@ -56,7 +55,7 @@
     if (sync.danger) {
       danger = { sync };
     } else {
-      toast.success(okMsg, { description: '已同步到内核' });
+      toast.success(okMsg);
     }
   }
 
@@ -153,29 +152,16 @@
       <Input placeholder="搜索名称、端口或来源…" bind:value={keyword} class="pl-9" />
     </div>
 
-    <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">
-      共 {filtered.length} 条规则
-    </span>
+    {#if keyword}
+      <span class="font-num ml-auto hidden text-xs text-muted-foreground sm:block">
+        共 {filtered.length} 条规则
+      </span>
+    {/if}
 
     <Button onclick={openCreate}>
       <Plus size={16} />
       新增放行
     </Button>
-  </div>
-
-  <div class="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-    <Info size={14} class="mt-0.5 shrink-0 text-info" />
-    <span>
-      放行规则写在面板链 <span class="font-mono">FPANEL_INPUT</span>，用于 INPUT 默认策略为 DROP 的机器上打开对外服务端口。
-      端口转发走的是 FORWARD 链，不受这里的规则影响。
-    </span>
-  </div>
-
-  <div class="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/[0.06] px-3 py-2 text-xs leading-relaxed text-warning">
-    <CloudOff size={14} class="mt-0.5 shrink-0" />
-    <span>
-      云厂商安全组（AWS Security Group、阿里云安全组、Oracle NSG 等）在虚拟机外面，面板改不了，需要到控制台单独放行。
-    </span>
   </div>
 
   {#if loading}
@@ -185,12 +171,7 @@
       {/each}
     </div>
   {:else if filtered.length === 0}
-    <EmptyState
-      title={keyword ? '没有匹配的规则' : '还没有放行规则'}
-      desc={keyword
-        ? '换个关键词试试。'
-        : '如果服务器 INPUT 策略是 DROP，新增一条放行规则就能打开对外端口。'}
-    >
+    <EmptyState title={keyword ? '没有匹配的规则' : '还没有放行规则'}>
       {#snippet icon()}<ShieldCheck size={22} />{/snippet}
       {#snippet action()}
         <Button onclick={openCreate}><Plus size={16} /> 新增放行</Button>
@@ -204,9 +185,6 @@
             <div class="min-w-[180px] flex-1 basis-48">
               <div class="flex flex-wrap items-center gap-2">
                 <span class="text-[13.5px] font-medium">{rule.name}</span>
-                {#if rule.src_cidr === ''}
-                  <Badge variant="outline" class="text-[10px]">任意来源</Badge>
-                {/if}
               </div>
               {#if rule.remark}
                 <p class="mt-0.5 truncate text-[11.5px] text-muted-foreground">{rule.remark}</p>
@@ -247,7 +225,7 @@
     <Dialog.Header>
       <Dialog.Title>{editing ? '编辑放行规则' : '新增端口放行'}</Dialog.Title>
       <Dialog.Description>
-        规则会写入面板链并立即生效。仅放行指定端口，不改动机器的默认策略。
+        写入面板链 FPANEL_INPUT，仅放行指定端口；端口转发走 FORWARD 链，不受影响。
       </Dialog.Description>
     </Dialog.Header>
 
@@ -301,6 +279,11 @@
       <div class="grid gap-2">
         <Label for="a-remark">备注</Label>
         <Input id="a-remark" placeholder="可选" bind:value={form.remark} />
+      </div>
+
+      <div class="flex items-start gap-2 rounded-lg bg-warning/[0.06] px-3 py-2 text-[11.5px] leading-relaxed text-warning">
+        <CloudOff size={14} class="mt-0.5 shrink-0" />
+        云厂商安全组在虚拟机外面，面板改不了 —— 云服务器还需到控制台放行此端口。
       </div>
     </div>
 

@@ -261,11 +261,10 @@
   <Card class="p-5 shadow-soft">
     <div class="mb-3.5 flex flex-wrap items-center gap-2.5">
       <div class="min-w-0">
-        <h2 class="flex items-center gap-2 text-sm font-semibold">
+        <h2 class="flex items-center gap-2 text-sm font-semibold" title="窗口约 5 分钟 · 2 秒粒度">
           <Waves size={15} class="text-primary" />
           网卡实时流量
         </h2>
-        <p class="mt-0.5 text-[11.5px] text-muted-foreground">按网卡统计收发速率，窗口约 5 分钟（2s 粒度）</p>
       </div>
       <div class="ml-auto flex flex-wrap items-center gap-1.5">
         {#each chartIfaces as i (i.name)}
@@ -338,11 +337,10 @@
   <Card class="p-5 shadow-soft">
     <div class="mb-3.5 flex flex-wrap items-center gap-2.5">
       <div class="min-w-0">
-        <h2 class="flex items-center gap-2 text-sm font-semibold">
+        <h2 class="flex items-center gap-2 text-sm font-semibold" title="3 秒自动刷新">
           <Activity size={15} class="text-primary" />
           实时连接
         </h2>
-        <p class="mt-0.5 text-[11.5px] text-muted-foreground">TCP 连接按速率排序、UDP 会话按进程与对端聚合，3 秒自动刷新</p>
       </div>
       <div class="relative ml-auto">
         <Search size={13} class="absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground/60" />
@@ -364,11 +362,7 @@
         {/each}
       </div>
     {:else if filteredConns.length === 0}
-      <EmptyState
-        compact
-        title={keyword ? '没有匹配的连接' : '当前没有活跃 TCP 连接'}
-        desc={keyword ? '换个关键词试试。' : '有连接产生流量后会实时出现在这里。'}
-      >
+      <EmptyState compact title={keyword ? '没有匹配的连接' : '当前没有活跃 TCP 连接'}>
         {#snippet icon()}<WifiOff size={20} />{/snippet}
         {#snippet action()}
           {#if keyword}
@@ -415,7 +409,7 @@
       </div>
       {#if filteredConns.length > shownConns.length}
         <p class="mt-3 border-t border-border/50 pt-2.5 text-center text-[11px] text-muted-foreground">
-          仅显示前 {shownConns.length} 行（共 {filteredConns.length} 行），可搜索缩小范围
+          仅显示前 {shownConns.length} 行 · 共 {filteredConns.length} 行
         </p>
       {/if}
     {/if}
@@ -429,7 +423,6 @@
         <Waves size={15} class="text-primary" />
         <span class="font-mono">{dialogIface}</span> 上的进程流量
       </Dialog.Title>
-      <Dialog.Description>本机连接按进程聚合，活跃进程置顶，实时刷新（3 秒）。</Dialog.Description>
     </Dialog.Header>
 
     {#if dialogIfaceRate}
@@ -446,7 +439,7 @@
       <EmptyState
         compact
         title="这块网卡上当前没有进程在跑流量"
-        desc="统计口径为本机连接（socket 计数差分）；DNAT 转发的过路流量与本机进程无关，不计入。"
+        desc="仅统计本机连接；DNAT 转发的过路流量不计入。"
       />
     {:else}
       <div class="max-h-[46vh] space-y-1 overflow-y-auto pr-1">
@@ -467,7 +460,10 @@
                   <span class="text-chart-2">↑ {fmtRate(r.tx_bps)}/s</span>
                 </span>
               {:else}
-                <span class="ml-auto shrink-0 text-[11px] text-muted-foreground/60">速率未知</span>
+                <span
+                  class="ml-auto shrink-0 text-[11px] text-muted-foreground/60"
+                  title="UDP 速率受内核限制无法按进程统计；进程归属按连接地址与网卡匹配"
+                >速率未知</span>
               {/if}
             </div>
             <!-- 行 2：连接构成 + 累计 -->
@@ -494,18 +490,15 @@
       {/if}
 
       <p class="mt-1 text-[10.5px] text-muted-foreground/70">
-        共 {procRows.length} 个进程 · {dialogTotalSessions} 条连接/会话（3 秒刷新；活跃进程置顶高亮）
+        共 {procRows.length} 个进程 · {dialogTotalSessions} 条连接/会话
       </p>
 
       {#if unaccounted}
         <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-warning/30 bg-warning/[0.06] px-3.5 py-2 text-[12px]">
           <span class="font-medium text-warning">未归类流量 ↓{fmtRate(unaccounted.rx)}/s · ↑{fmtRate(unaccounted.tx)}/s</span>
-          <span class="text-[11px] text-muted-foreground">来自 UDP 会话（内核不提供 UDP 字节计数）、转发过路流量、TCP/IP 包头开销与采样间隙的短连接</span>
+          <span class="text-[11px] text-muted-foreground">来自 UDP 会话（内核不提供字节计数）、转发过路流量、包头开销与短连接</span>
         </div>
       {/if}
-      <p class="text-[10.5px] leading-relaxed text-muted-foreground/70">
-        进程归属依据连接地址与网卡的匹配（通配监听归入所有网卡）；UDP 速率受内核限制无法按进程统计。
-      </p>
     {/if}
 
     <Dialog.Footer class="sm:justify-end">

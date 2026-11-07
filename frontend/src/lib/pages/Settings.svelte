@@ -233,7 +233,6 @@
         <SettingsIcon size={15} class="text-primary" />
         用户与权限
       </h2>
-      <span class="font-num text-[11px] text-muted-foreground">{users.length} 个账号</span>
       <Button size="sm" class="ml-auto h-8" onclick={() => (createOpen = true)}>
         <UserPlus size={14} /> 新增用户
       </Button>
@@ -276,10 +275,6 @@
         </tbody>
       </table>
     </div>
-    <p class="mt-4 text-[11.5px] leading-relaxed text-muted-foreground">
-      管理员可变更全部配置；只读用户仅可查看面板与日志。全部变更都会记录在
-      <a class="text-primary hover:underline" href="#/logs">操作审计</a> 中。
-    </p>
   </Card>
 
   <!-- 面板端口 -->
@@ -292,7 +287,6 @@
       <Badge variant="outline" class="text-[10px] bg-muted text-muted-foreground ring-border">
         当前 HTTP {portsInfo?.listen ?? '—'} · HTTPS {portsInfo?.https_port || '未启用'}
       </Badge>
-      <span class="ml-auto text-[11px] text-muted-foreground">保存后需重启面板生效</span>
     </div>
     <div class="mt-3 flex flex-wrap items-end gap-3">
       <div class="grid gap-1.5">
@@ -303,19 +297,15 @@
         <Label class="text-[11px] text-muted-foreground">HTTPS 端口 <span class="text-[10px]">（需已启用 -panel-https）</span></Label>
         <Input class="h-9 w-36 font-mono" inputmode="numeric" placeholder="18443" bind:value={portsForm.https} />
       </div>
-      <Button class="h-9" disabled={portsSaving || !portsDirty} onclick={savePorts}>
+      <Button class="h-9" disabled={portsSaving || !portsDirty} onclick={savePorts} title="保存时自动试绑校验，端口被占用会拒绝">
         {portsSaving ? '保存中…' : '保存'}
       </Button>
       {#if restartPending}
-        <Button class="h-9" variant="destructive" disabled={restarting} onclick={restartPanel}>
+        <Button class="h-9" variant="destructive" disabled={restarting} onclick={restartPanel} title="重启期间面板不可访问约 3-5 秒，之后请用新地址访问">
           {restarting ? '重启中…' : '重启面板生效'}
         </Button>
       {/if}
     </div>
-    <p class="mt-2.5 text-[11px] leading-relaxed text-muted-foreground">
-      端口保存时自动试绑校验（被占用会拒绝）；HTTPS 端口仅在已配置面板 HTTPS（-panel-https 参数）时生效。
-      重启期间面板不可访问约 3-5 秒，之后请用新地址访问。
-    </p>
     <p class="mt-1.5 rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-warning">
       改端口前请先在宿主防火墙与云安全组放行新端口：重启后新端口若被拦截，将无法再从浏览器进入面板（需 SSH 改配置回滚）。
     </p>
@@ -373,7 +363,6 @@
   <Dialog.Content class="sm:max-w-sm">
     <Dialog.Header>
       <Dialog.Title>新增用户</Dialog.Title>
-      <Dialog.Description>密码以 bcrypt 加密存储。</Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid gap-2">
@@ -383,7 +372,7 @@
       <div class="grid gap-2">
         <Label for="u-pass">密码</Label>
         <Input id="u-pass" type="password" bind:value={form.password} />
-        {#if form.password && form.password.length < 6}
+        {#if form.password && form.password.length < 8}
           <p class="text-[11px] text-warning">至少 8 位</p>
         {/if}
       </div>

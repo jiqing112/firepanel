@@ -4,6 +4,7 @@
   import { session, initSession } from '$lib/stores/session.svelte';
   import { navGroups } from '$lib/nav';
   import { t, type I18nKey } from '$lib/i18n';
+  import type { Component } from 'svelte';
   import AppShell from '$lib/components/layout/AppShell.svelte';
   import Dashboard from '$lib/pages/Dashboard.svelte';
   import Forwards from '$lib/pages/Forwards.svelte';
@@ -23,7 +24,6 @@
   import Settings from '$lib/pages/Settings.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Setup from '$lib/pages/Setup.svelte';
-  import Placeholder from '$lib/pages/Placeholder.svelte';
   import { Toaster } from '$lib/components/ui/sonner';
   import { TooltipProvider } from '$lib/components/ui/tooltip';
   import { fade } from 'svelte/transition';
@@ -45,6 +45,8 @@
 
   const isAuthPage = $derived(pathname === '/login' || pathname === '/setup');
 
+  const knownPaths = navGroups.flatMap((g) => g.items.map((i) => i.path));
+
   // 路由守卫
   $effect(() => {
     if (!booted) return;
@@ -59,51 +61,55 @@
     // 已登录访问登录页 → 回仪表盘
     if (session.user && (pathname === '/login' || pathname === '/')) {
       navigate('/dashboard', true);
+      return;
+    }
+    // 未知路径 → 回仪表盘
+    if (session.user && !knownPaths.includes(pathname)) {
+      navigate('/dashboard', true);
     }
   });
 
-  function pageMeta(path: string): { comp: unknown; titleKey: string; subKey?: string } {
+  function pageMeta(path: string): { comp: Component; titleKey: I18nKey } {
     switch (path) {
       case '/dashboard':
-        return { comp: Dashboard, titleKey: 'dashboard.title', subKey: '系统运行概览与实时流量' };
+        return { comp: Dashboard, titleKey: 'nav.dashboard' };
       case '/forwards':
-        return { comp: Forwards, titleKey: 'forwards.title', subKey: 'TCP / UDP 端口映射与域名目标（DDNS）' };
+        return { comp: Forwards, titleKey: 'nav.forwards' };
       case '/ports':
-        return { comp: Ports, titleKey: 'nav.ports', subKey: '监听端口扫描 · 端口记录台账' };
+        return { comp: Ports, titleKey: 'nav.ports' };
       case '/traffic':
-        return { comp: Traffic, titleKey: 'nav.traffic', subKey: '网卡实时速率 · 连接级流量排行' };
+        return { comp: Traffic, titleKey: 'nav.traffic' };
       case '/iplists':
-        return { comp: IPLists, titleKey: 'nav.iplists', subKey: '批量黑白名单管理与来源过滤' };
+        return { comp: IPLists, titleKey: 'nav.iplists' };
       case '/firewall':
-        return { comp: FirewallRules, titleKey: 'nav.firewall', subKey: '内核规则视图 · 漂移检测 · 同步' };
+        return { comp: FirewallRules, titleKey: 'nav.firewall' };
       case '/proxy':
-        return { comp: Proxy, titleKey: 'nav.proxy', subKey: 'HTTP/HTTPS 域名路由 · WebSocket 透传 · 自动证书' };
+        return { comp: Proxy, titleKey: 'nav.proxy' };
       case '/logs':
-        return { comp: Logs, titleKey: 'nav.logs', subKey: '操作审计与实时事件流' };
+        return { comp: Logs, titleKey: 'nav.logs' };
       case '/nat':
-        return { comp: NAT, titleKey: 'nav.nat', subKey: 'SNAT / MASQUERADE 出口策略' };
+        return { comp: NAT, titleKey: 'nav.nat' };
       case '/allow':
-        return { comp: Allow, titleKey: 'nav.allow', subKey: 'INPUT 链入站放行 · 打开对外服务端口' };
+        return { comp: Allow, titleKey: 'nav.allow' };
       case '/ratelimit':
-        return { comp: RateLimit, titleKey: 'nav.ratelimit', subKey: '限速与连接数限制 · 防 CC / 扫描' };
+        return { comp: RateLimit, titleKey: 'nav.ratelimit' };
       case '/fail2ban':
-        return { comp: Fail2ban, titleKey: 'nav.fail2ban', subKey: '失败阈值自动封禁 · 到期自动解封' };
+        return { comp: Fail2ban, titleKey: 'nav.fail2ban' };
       case '/tasks':
-        return { comp: Tasks, titleKey: 'nav.tasks', subKey: '计划启停规则与周期同步' };
+        return { comp: Tasks, titleKey: 'nav.tasks' };
       case '/alerts':
-        return { comp: Alerts, titleKey: 'nav.alerts', subKey: 'Telegram / Webhook / 邮件推送' };
+        return { comp: Alerts, titleKey: 'nav.alerts' };
       case '/settings':
-        return { comp: Settings, titleKey: 'nav.settings', subKey: '系统信息 · 用户与权限' };
+        return { comp: Settings, titleKey: 'nav.settings' };
       case '/backup':
-        return { comp: Backup, titleKey: 'nav.backup', subKey: '备份导出 · 恢复 · 跨机迁移' };
-      default: {
-        const item = navGroups.flatMap((g) => g.items).find((i) => i.path === path);
-        return { comp: Placeholder, titleKey: (item?.labelKey ?? 'nav.dashboard') as string };
-      }
+        return { comp: Backup, titleKey: 'nav.backup' };
+      default:
+        return { comp: Dashboard, titleKey: 'nav.dashboard' };
     }
   }
 
   const meta = $derived(pageMeta(pathname));
+  const Page = $derived(meta.comp);
 </script>
 
 <TooltipProvider delayDuration={200}>
@@ -113,45 +119,11 @@
   {:else if !session.user}
     <Login />
   {:else}
-    <AppShell title={t(meta.titleKey as I18nKey)} subtitle={meta.subKey}>
+    <AppShell title={t(meta.titleKey)}>
       <!-- 不用 key+过渡 包裹路由页：后台标签页 rAF 节流时过渡回调不执行，
            会遗留僵尸 DOM，导致页面停在加载骨架且交互失效 -->
       <div>
-          {#if meta.comp === Dashboard}
-            <Dashboard />
-          {:else if meta.comp === Forwards}
-            <Forwards />
-          {:else if meta.comp === Ports}
-            <Ports />
-          {:else if meta.comp === Traffic}
-            <Traffic />
-          {:else if meta.comp === IPLists}
-            <IPLists />
-          {:else if meta.comp === FirewallRules}
-            <FirewallRules />
-          {:else if meta.comp === Proxy}
-            <Proxy />
-          {:else if meta.comp === Logs}
-            <Logs />
-          {:else if meta.comp === NAT}
-            <NAT />
-          {:else if meta.comp === Allow}
-            <Allow />
-          {:else if meta.comp === RateLimit}
-            <RateLimit />
-          {:else if meta.comp === Fail2ban}
-            <Fail2ban />
-          {:else if meta.comp === Tasks}
-            <Tasks />
-          {:else if meta.comp === Alerts}
-            <Alerts />
-          {:else if meta.comp === Settings}
-            <Settings />
-          {:else if meta.comp === Backup}
-            <Backup />
-          {:else}
-            <Placeholder title={t(meta.titleKey as I18nKey)} />
-          {/if}
+          <Page />
       </div>
     </AppShell>
   {/if}

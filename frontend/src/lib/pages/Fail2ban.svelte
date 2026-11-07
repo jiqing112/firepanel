@@ -70,7 +70,7 @@
   const BUILTINS: Builtin[] = [
     {
       key: 'sshd', name: 'SSH 爆破防护', accent: 'primary',
-      desc: '监听 journald 的 ssh 单元，密码爆破达标即封禁（推荐常开）',
+      desc: '监听 journald 的 ssh 单元，密码爆破达标即封禁',
       source_type: 'journald', unit: 'ssh', log_path: '', match_regex: SSH_RE,
       threshold: 5, find_time: 600, ban_time: 1800,
     },
@@ -286,7 +286,6 @@
   <div>
     <div class="mb-2.5 flex items-center gap-2.5">
       <h2 class="text-sm font-semibold">我的 Jail</h2>
-      <span class="font-num text-[11.5px] text-muted-foreground">{jails.length} 个</span>
       <Button variant="outline" size="sm" class="ml-auto h-8" onclick={() => (builtinOpen = true)}>
         <Rocket size={14} />
         启用内置防护方案
@@ -301,10 +300,7 @@
         {/each}
       </div>
     {:else if jails.length === 0}
-      <EmptyState
-        title="尚未启用任何 Jail"
-        desc="从内置防护方案一键启用（SSH 爆破 / 面板登录 / Web 401-403），或创建自定义 Jail。"
-      >
+      <EmptyState title="尚未启用任何 Jail">
         {#snippet icon()}<ShieldAlert size={22} />{/snippet}
         {#snippet action()}
           <Button variant="outline" onclick={() => (builtinOpen = true)}>
@@ -360,9 +356,6 @@
         <Rocket size={16} class="text-primary" />
         启用内置防护方案
       </Dialog.Title>
-      <Dialog.Description>
-        一键启用的方案会出现在「我的 Jail」中，参数可随时调整。
-      </Dialog.Description>
     </Dialog.Header>
 
     <div class="grid gap-2.5">
@@ -416,7 +409,7 @@
 
     <Dialog.Footer class="sm:justify-start">
       <p class="text-[11px] leading-relaxed text-muted-foreground">
-        默认忽略私网/回环网段防止误封管理地址；启用后可在「我的 Jail」中调整阈值、窗口与封禁时长。
+        默认忽略私网与回环网段，防止误封管理地址。
       </p>
     </Dialog.Footer>
   </Dialog.Content>
@@ -427,7 +420,6 @@
   <Dialog.Content class="max-h-[88vh] overflow-y-auto sm:max-w-lg">
     <Dialog.Header>
       <Dialog.Title>{editing ? '编辑 Jail' : '自定义 Jail'}</Dialog.Title>
-      <Dialog.Description>窗口内失败达到阈值即自动封禁，到期由面板自动解封。</Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-3.5">
       {#if !editing}
@@ -450,7 +442,7 @@
           <Input id="j-name" placeholder="sshd 爆破防护" bind:value={form.name} />
         </div>
         <div class="grid gap-2">
-          <Label for="j-unit">journald 单元 {#if form.source_type !== 'journald'}<span class="text-muted-foreground/60">（仅 journald）</span>{/if}</Label>
+          <Label for="j-unit">journald 单元</Label>
           <Input id="j-unit" placeholder="ssh" bind:value={form.unit} class="font-mono" disabled={form.source_type !== 'journald'} />
         </div>
       </div>
@@ -485,8 +477,8 @@
       </div>
 
       <div class="grid gap-2">
-        <Label for="j-ignore">忽略网段 <span class="text-muted-foreground/70">（逗号分隔 CIDR，防误封管理地址）</span></Label>
-        <Input id="j-ignore" bind:value={form.ignore_cidrs} class="font-mono text-[12px]" />
+        <Label for="j-ignore">忽略网段</Label>
+        <Input id="j-ignore" placeholder="逗号分隔，如 192.168.0.0/16, 127.0.0.0/8" bind:value={form.ignore_cidrs} class="font-mono text-[12px]" title="防止误封管理地址" />
       </div>
     </div>
     <Dialog.Footer class="gap-2 sm:justify-end">

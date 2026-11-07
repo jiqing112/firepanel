@@ -136,14 +136,12 @@
         <Play size={12} class="mr-1" />
         {enablingForward ? '开启中…' : '开始NAT转发'}
       </Button>
-      <span class="text-[11.5px] text-muted-foreground">一键执行 <code class="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px]">sysctl -w net.ipv4.ip_forward=1</code> 并写入 <code class="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px]">/etc/sysctl.conf</code> 持久化</span>
+      <span class="text-[11.5px] text-muted-foreground">执行 <code class="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px]">sysctl -w net.ipv4.ip_forward=1</code> 并写入 <code class="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px]">/etc/sysctl.conf</code> 持久化</span>
     </div>
   {/if}
 
   <!-- 列表 -->
-  <div class="flex items-center gap-2.5">
-    <span class="font-num text-xs text-muted-foreground">共 {items.length} 条</span>
-    <span class="ml-auto"></span>
+  <div class="flex justify-end">
     <Button onclick={openCreate}><Plus size={16} /> 新增 NAT</Button>
   </div>
 
@@ -154,10 +152,7 @@
       {/each}
     </div>
   {:else if items.length === 0}
-    <EmptyState
-      title="还没有 NAT 规则"
-      desc="让内网网段经指定网卡出网：出口 IP 动态（拨号/DHCP）选 MASQUERADE，固定 IP 选 SNAT。"
-    >
+    <EmptyState title="还没有 NAT 规则">
       {#snippet icon()}<Network size={22} />{/snippet}
       {#snippet action()}
         <Button onclick={openCreate}><Plus size={16} /> 新增 NAT</Button>
@@ -213,21 +208,11 @@
 <Dialog.Root bind:open={createOpen}>
   <Dialog.Content class="max-h-[92vh] overflow-hidden p-0 sm:max-w-4xl">
     <div class="grid md:grid-cols-[1.1fr_1fr] md:overflow-y-auto" style="max-height: 92vh;">
-      <!-- 左栏：NAT 原理解释 -->
+      <!-- 左栏：类型选择 -->
       <div class="flex flex-col gap-4 border-b border-border/60 bg-gradient-to-br from-primary/[0.06] via-transparent to-info/[0.05] p-6 md:border-b-0 md:border-r">
         <Dialog.Header class="space-y-1.5">
           <Dialog.Title>{editing ? '编辑 NAT 规则' : '新增 NAT 规则'}</Dialog.Title>
-          <Dialog.Description>NAT（网络地址转换）：让内网设备共享出口上网。</Dialog.Description>
         </Dialog.Header>
-
-        <p class="text-[12.5px] leading-relaxed text-muted-foreground">
-          当<b class="text-foreground">内网设备</b>（如 192.168.1.x 的机器）访问外网时，出口路由器会把它的
-          「来源地址」改写成<b class="text-foreground">出口网卡的地址</b>——否则外网不认识私有地址，回包也回不来。
-        </p>
-        <p class="text-[12.5px] leading-relaxed text-muted-foreground">
-          一条 NAT 规则就是回答：
-          <span class="font-medium text-foreground">「哪个内网网段，从哪块网卡出去，出去时用什么地址」</span>。
-        </p>
 
         <!-- 流程示意 -->
         <div class="flex items-center gap-2 rounded-xl border border-border/60 bg-background/60 px-4 py-3 font-mono text-[11px] leading-relaxed">
@@ -291,7 +276,7 @@
             <Input id="nat-name" placeholder="如：内网上网" bind:value={form.name} />
           </div>
           <div class="grid gap-2">
-            <Label for="nat-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+            <Label for="nat-remark">备注</Label>
             <Input id="nat-remark" bind:value={form.remark} />
           </div>
         </div>
@@ -307,10 +292,7 @@
             <Tooltip.Content class="text-xs">即源 IP 范围（CIDR 写法）。只有这个范围内的设备出网时会被改写地址，其余不受影响。</Tooltip.Content>
           </Tooltip.Root>
         </div>
-        <Input id="nat-src" placeholder="192.168.1.0/24" bind:value={form.src_cidr} class="font-mono" />
-        <p class="text-[11px] text-muted-foreground">
-          写法：网段 + 掩码位数。<span class="font-mono">192.168.1.0/24</span> 表示 192.168.1.1 ~ 192.168.1.254 整个 C 段
-        </p>
+        <Input id="nat-src" placeholder="192.168.1.0/24" bind:value={form.src_cidr} class="font-mono" title="网段 + 掩码位数：192.168.1.0/24 = 192.168.1.1 ~ 192.168.1.254 整个 C 段" />
       </div>
 
       <!-- 第 2 步：出口网卡（下拉，遍历系统网卡） -->
@@ -321,7 +303,7 @@
           value={form.out_iface}
           onValueChange={(v) => (form.out_iface = v)}
         >
-          <Select.Trigger class="w-full font-mono">
+          <Select.Trigger class="w-full font-mono" title="连接外网的那块网卡（通常是有公网/上层网关地址的）">
             {form.out_iface || '选择网卡…'}
             {#if form.out_iface && ifaceAddr(form.out_iface)}
               <span class="ml-1 text-[11px] text-muted-foreground">({ifaceAddr(form.out_iface)})</span>
@@ -340,22 +322,18 @@
             {/each}
           </Select.Content>
         </Select.Root>
-        <p class="text-[11px] text-muted-foreground">连接外网的那块网卡（通常是有公网/上层网关地址的）</p>
       </div>
 
       <!-- 第 3 步：SNAT 出口 IP -->
       {#if form.type === 'SNAT'}
         <div class="grid gap-1.5 rounded-lg border border-info/30 bg-info/[0.04] p-3">
           <Label for="nat-to">第 3 步 · 出网时用什么地址（网卡上的固定 IP）</Label>
-          <Input id="nat-to" placeholder="203.0.113.5" bind:value={form.to_addr} class="font-mono" />
-          <p class="text-[11px] text-muted-foreground">
-            必须是出口网卡上真实配置的地址。外网设备看到的来源就是这个 IP。
-            {#if form.out_iface && ifaceAddr(form.out_iface)}
-              <button type="button" class="ml-1 text-info hover:underline" onclick={() => (form.to_addr = ifaceAddr(form.out_iface))}>
-                填入 {form.out_iface} 当前地址 {ifaceAddr(form.out_iface)}
-              </button>
-            {/if}
-          </p>
+          <Input id="nat-to" placeholder="203.0.113.5" bind:value={form.to_addr} class="font-mono" title="必须是出口网卡上真实配置的地址，外网看到的来源就是这个 IP" />
+          {#if form.out_iface && ifaceAddr(form.out_iface)}
+            <button type="button" class="justify-self-start text-[11px] text-info hover:underline" onclick={() => (form.to_addr = ifaceAddr(form.out_iface))}>
+              填入 {form.out_iface} 当前地址 {ifaceAddr(form.out_iface)}
+            </button>
+          {/if}
         </div>
       {/if}
 

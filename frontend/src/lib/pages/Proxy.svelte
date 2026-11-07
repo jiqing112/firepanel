@@ -62,13 +62,6 @@
     error: { label: '证书异常', cls: 'bg-destructive/10 text-destructive ring-destructive/20' },
     none: { label: '无 TLS', cls: 'bg-muted text-muted-foreground ring-border' },
   };
-  const challengeLabel: Record<string, string> = {
-    '': '自动',
-    auto: '自动',
-    http: 'HTTP-01',
-    alpn: 'TLS-ALPN',
-    dns: 'DNS-01',
-  };
 
   /* 新增/编辑域名 */
   let createOpen = $state(false);
@@ -475,19 +468,8 @@ handle_path /.well-known/acme-challenge/* {
       {/each}
     </div>
   {:else if items.length === 0}
-    <EmptyState title="还没有反向代理" desc="三步把你的服务发布到公网：">
+    <EmptyState title="还没有反向代理">
       {#snippet icon()}<Globe size={22} />{/snippet}
-      {#snippet children()}
-        <div class="mx-auto grid max-w-md gap-2 text-left text-[12.5px]">
-          {#each [["1", "添加域名", "填访问域名和服务地址，一步创建"], ["2", "证书自动签发", "Let's Encrypt 自动续期，含 IP 短期证书"], ["3", "即插即用", "流量按域名转发，随时加路径路由"]] as [n, t, d2] (n)}
-            <div class="flex items-center gap-3 rounded-lg border border-border/60 px-3.5 py-2.5">
-              <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{n}</span>
-              <span class="font-medium">{t}</span>
-              <span class="text-muted-foreground">{d2}</span>
-            </div>
-          {/each}
-        </div>
-      {/snippet}
       {#snippet action()}
         <Button onclick={() => (createOpen = true)}><Plus size={16} /> 添加反向代理</Button>
       {/snippet}
@@ -516,7 +498,6 @@ handle_path /.well-known/acme-challenge/* {
                 </Badge>
                 {#if d.tls_mode === 'auto'}
                   <Badge variant="outline" class="bg-primary/5 text-[10px] text-primary ring-primary/20">Let's Encrypt</Badge>
-                  <Badge variant="outline" class="bg-muted text-[10px] text-muted-foreground ring-border">{challengeLabel[d.challenge ?? ''] ?? '自动'}</Badge>
                 {:else if d.tls_mode === 'manual'}
                   <Badge variant="outline" class="bg-info/5 text-[10px] text-info ring-info/20">手动证书</Badge>
                 {/if}
@@ -551,7 +532,7 @@ handle_path /.well-known/acme-challenge/* {
 
           {#if d.routes.length === 0}
             <div class="px-5 py-6">
-              <EmptyState compact title="暂无路由" desc="添加至少一条路由，把该域名的流量转发到上游服务。">
+              <EmptyState compact title="暂无路由">
                 {#snippet icon()}<Server size={18} />{/snippet}
                 {#snippet action()}
                   <Button variant="outline" size="sm" onclick={() => openRoute(d)}><Plus size={14} /> 添加路由</Button>
@@ -615,11 +596,9 @@ handle_path /.well-known/acme-challenge/* {
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>{editingId === null ? '添加反向代理' : '编辑域名'}</Dialog.Title>
-      <Dialog.Description>
-        {editingId === null
-          ? '填两处即可：访问域名 + 服务地址。证书自动签发，流量按域名转发到你的服务。'
-          : '修改域名与证书设置；路由转发在域名卡片中管理。'}
-      </Dialog.Description>
+      {#if editingId !== null}
+        <Dialog.Description>路由转发在域名卡片中管理。</Dialog.Description>
+      {/if}
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid gap-2">
@@ -632,8 +611,7 @@ handle_path /.well-known/acme-challenge/* {
       {#if editingId === null}
         <div class="grid gap-2">
           <Label for="pd-upstream">② 服务地址</Label>
-          <Input id="pd-upstream" placeholder="http://127.0.0.1:8080" bind:value={dform.upstream} class="font-mono" />
-          <p class="text-[11px] text-muted-foreground">要被代理的服务地址，自动创建 "/" 路由；更多路径稍后可在域名卡片中添加。</p>
+          <Input id="pd-upstream" placeholder="http://127.0.0.1:8080" bind:value={dform.upstream} class="font-mono" title="自动创建 / 路由；更多路径稍后可在域名卡片中添加" />
         </div>
       {/if}
       <label class="flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2.5 text-[13px]">
@@ -725,7 +703,7 @@ handle_path /.well-known/acme-challenge/* {
             </div>
           </div>
           <div class="grid gap-2">
-            <Label for="pd-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+            <Label for="pd-remark">备注</Label>
             <Input id="pd-remark" placeholder="用途说明" bind:value={dform.remark} />
           </div>
         </div>
@@ -745,7 +723,7 @@ handle_path /.well-known/acme-challenge/* {
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>添加路由{routeDomain ? ` · ${routeDomain.domain}` : ''}</Dialog.Title>
-      <Dialog.Description>按最长路径前缀匹配；WebSocket 升级自动透传。</Dialog.Description>
+      <Dialog.Description>按最长路径前缀匹配。</Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-3.5">
       <div class="grid grid-cols-2 gap-3">
@@ -754,7 +732,7 @@ handle_path /.well-known/acme-challenge/* {
           <Input id="pr-path" placeholder="/ 或 /api" bind:value={rform.path_match} class="font-mono" />
         </div>
         <div class="grid gap-2">
-          <Label for="pr-health">健康检查路径 <span class="text-muted-foreground/70">（可选）</span></Label>
+          <Label for="pr-health">健康检查路径</Label>
           <Input id="pr-health" placeholder="/healthz" bind:value={rform.health_path} class="font-mono" />
         </div>
       </div>
@@ -781,7 +759,7 @@ handle_path /.well-known/acme-challenge/* {
   <Dialog.Content class="max-h-[92vh] w-full max-w-[calc(100vw-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-lg">
     <Dialog.Header>
       <Dialog.Title>反代环境探测</Dialog.Title>
-      <Dialog.Description>80/443 可用性决定证书挑战方式；推荐值可在添加域名时手动覆盖。</Dialog.Description>
+      <Dialog.Description>80/443 可用性决定证书挑战方式。</Dialog.Description>
     </Dialog.Header>
     {#if env}
       <div class="min-w-0 space-y-3">
@@ -794,14 +772,10 @@ handle_path /.well-known/acme-challenge/* {
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-[12px] text-muted-foreground">当前引擎</span>
               <span class="text-[15px] font-bold text-foreground">{env.engine === 'caddy' ? 'Caddy 托管' : '内置引擎'}</span>
-              <Badge variant="outline" class="text-[10px] {env.engine === 'caddy' ? 'bg-info/10 text-info ring-info/25' : 'bg-primary/10 text-primary ring-primary/25'}">
-                {env.engine === 'caddy' ? '模式 3' : '模式 1 / 2'}
-              </Badge>
             </div>
-            <p class="mt-0.5 truncate text-[11.5px] text-muted-foreground">
-              {env.engine === 'caddy' ? 'Caddy 承担反代与证书，面板下发配置与观测' : '面板直接监听并承担反代与证书（零外部依赖）'}
-              <span class="font-mono">· HTTP {env.listen_http || '未配置'} · HTTPS {env.listen_https || '未配置'}</span>
-              {#if env.caddy_installed}<span class="font-mono"> · Caddy {env.caddy_version}</span>{/if}
+            <p class="mt-0.5 truncate font-mono text-[11.5px] text-muted-foreground">
+              HTTP {env.listen_http || '未配置'} · HTTPS {env.listen_https || '未配置'}
+              {#if env.caddy_installed} · Caddy {env.caddy_version}{/if}
             </p>
           </div>
         </div>
@@ -825,7 +799,7 @@ handle_path /.well-known/acme-challenge/* {
           </div>
         </div>
 
-        <!-- 引擎与监听切换（模式 1/2/3 的正交配置） -->
+        <!-- 引擎与监听切换 -->
         <div class="rounded-lg border border-border/60 p-3.5">
           <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-semibold">
             引擎与监听
@@ -873,7 +847,7 @@ handle_path /.well-known/acme-challenge/* {
           {:else if engineForm.engine === 'caddy'}
             <p class="mt-2 text-[11px] text-muted-foreground">切换后由 Caddy 监听上述端口并负责反代与证书；面板继续提供配置下发与观测。</p>
           {:else}
-            <p class="mt-2 text-[11px] text-muted-foreground">端口变更会先释放旧监听再绑定新端口；80/443 保持不变即对应「直接接管」形态。</p>
+            <p class="mt-2 text-[11px] text-muted-foreground">端口变更会先释放旧监听再绑定新端口。</p>
           {/if}
           <Button size="sm" class="mt-2.5 h-8 w-full text-[12px]" disabled={engineSaving || !engineDirty} onclick={saveEngine}>
             {engineSaving ? '应用中…' : engineDirty ? '保存并应用（重建监听）' : '无变更'}
@@ -1017,11 +991,7 @@ handle_path /.well-known/acme-challenge/* {
           <span>面板只会把托管段<span class="font-medium text-foreground">追加</span>到文件末尾，你现有的站点与 snippets 不会被改写。</span>
         {/if}
       </p>
-      <p class="mt-1">
-        保存前自动备份到 <code class="rounded bg-foreground/[0.06] px-1 font-mono">{cfPath}.bak-时间戳</code>
-        （首次另存 <code class="rounded bg-foreground/[0.06] px-1 font-mono">.fp-orig</code>，保留最近 10 份备份）；
-        校验不通过则完全不落盘。
-      </p>
+      <p class="mt-1">保存前自动备份；校验不通过则完全不落盘。</p>
     </div>
 
     <!-- 视图切换：服务器实际文件 / 面板生成预览 -->
@@ -1049,9 +1019,6 @@ handle_path /.well-known/acme-challenge/* {
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" class="h-8 text-[12px]" onclick={appendGenerated}>追加到编辑区末尾</Button>
           <Button size="sm" variant="outline" class="h-8 text-[12px]" onclick={() => { copyText(cfGenerated) }}>复制</Button>
-          <span class="text-[10.5px] text-muted-foreground">
-            只追加，不替换——文件里已有的内容会全部保留
-          </span>
         </div>
       </div>
     {:else}
@@ -1076,7 +1043,6 @@ handle_path /.well-known/acme-challenge/* {
         </Button>
         <span class="text-[10.5px] text-muted-foreground">
           {#if cfDirty}有未保存修改{:else}与服务器一致{/if}
-          · 语法错误会在保存时提示，且不会写入文件
         </span>
       </div>
     {/if}

@@ -184,7 +184,6 @@
           <ScanLine size={15} class="text-primary" />
           本机监听端口
         </h2>
-        <p class="mt-0.5 text-[11.5px] text-muted-foreground">实时扫描 TCP / UDP 监听与占用进程，可一键记入下方台账</p>
       </div>
       <Button variant="outline" size="sm" class="ml-auto h-8" disabled={scanLoading} onclick={loadScan}>
         <RefreshCw size={13} class={scanLoading ? 'animate-spin' : ''} /> 刷新扫描
@@ -202,7 +201,7 @@
         {/each}
       </div>
     {:else if sortedListening.length === 0}
-      <EmptyState compact title="没有发现监听端口" desc="当前没有 TCP / UDP 服务在监听。">
+      <EmptyState compact title="没有发现监听端口">
         {#snippet action()}
           <Button variant="outline" size="sm" onclick={loadScan}><RefreshCw size={13} /> 重新扫描</Button>
         {/snippet}
@@ -269,7 +268,6 @@
           <BookMarked size={15} class="text-primary" />
           端口记录
         </h2>
-        <p class="mt-0.5 text-[11.5px] text-muted-foreground">登记每个端口的用途与归属服务，与实时监听状态联动</p>
       </div>
       <div class="relative ml-auto">
         <Search size={13} class="absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground/60" />
@@ -285,17 +283,14 @@
         {/each}
       </div>
     {:else if records.length === 0}
-      <EmptyState
-        title="还没有端口记录"
-        desc="为常用端口登记用途（如 22 · SSH、6379 · Redis），方便交接与审计；也可从上方扫描结果一键记入。"
-      >
+      <EmptyState title="还没有端口记录">
         {#snippet icon()}<BookMarked size={22} />{/snippet}
         {#snippet action()}
           <Button onclick={openCreate}><Plus size={16} /> 新增记录</Button>
         {/snippet}
       </EmptyState>
     {:else if filtered.length === 0}
-      <EmptyState compact title="没有匹配的记录" desc="换个关键词试试。">
+      <EmptyState compact title="没有匹配的记录">
         {#snippet icon()}<Search size={20} />{/snippet}
         {#snippet action()}
           <Button variant="outline" size="sm" onclick={() => (keyword = '')}>清除筛选</Button>
@@ -353,7 +348,7 @@
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>{editing ? '编辑端口记录' : '新增端口记录'}</Dialog.Title>
-      <Dialog.Description>登记端口的用途与归属服务，纯台账信息，不影响内核规则。</Dialog.Description>
+      <Dialog.Description>纯台账，不影响内核规则。</Dialog.Description>
     </Dialog.Header>
     <div class="grid gap-4">
       <div class="grid grid-cols-[1.4fr_1fr] gap-3">
@@ -387,11 +382,11 @@
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="grid gap-1.5">
-          <Label for="pr-group">分组 <span class="text-muted-foreground/70">（可选）</span></Label>
+          <Label for="pr-group">分组</Label>
           <Input id="pr-group" placeholder="web / 数据库 / docker" bind:value={form.group_tag} />
         </div>
         <div class="grid gap-1.5">
-          <Label for="pr-remark">备注 <span class="text-muted-foreground/70">（可选）</span></Label>
+          <Label for="pr-remark">备注</Label>
           <Input id="pr-remark" bind:value={form.remark} />
         </div>
       </div>

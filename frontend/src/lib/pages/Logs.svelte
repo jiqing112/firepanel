@@ -72,7 +72,9 @@
   <Card class="xl:col-span-2 shadow-soft">
     <div class="flex flex-wrap items-center gap-2.5 border-b border-border/60 px-5 py-3.5">
       <h2 class="text-sm font-semibold">操作审计</h2>
-      <span class="font-num text-[11px] text-muted-foreground">最近 {filtered.length} 条</span>
+      {#if keyword}
+        <span class="font-num text-[11px] text-muted-foreground">最近 {filtered.length} 条</span>
+      {/if}
       <div class="relative ml-auto min-w-[200px] flex-1 sm:max-w-xs">
         <Search size={14} class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted-foreground" />
         <Input placeholder="搜索用户、动作、对象…" bind:value={keyword} class="h-8 pl-8 text-[12.5px]" />
@@ -88,7 +90,7 @@
       </div>
     {:else if filtered.length === 0}
       <div class="p-5">
-        <EmptyState compact title="暂无审计记录" desc="登录、规则变更、同步等操作都会记录在这里。" />
+        <EmptyState compact title="暂无审计记录" />
       </div>
     {:else}
       <div class="max-h-[560px] overflow-y-auto">
@@ -141,7 +143,7 @@
     </div>
     {#if live.length === 0}
       <div class="p-5">
-        <EmptyState compact title="等待事件…" desc="规则变更、漂移、健康状态切换等事件会实时出现在这里。" />
+        <EmptyState compact title="等待事件…" />
       </div>
     {:else}
       <div class="max-h-[560px] space-y-1.5 overflow-y-auto p-4">

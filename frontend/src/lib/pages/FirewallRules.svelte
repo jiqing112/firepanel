@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RefreshCw, ShieldCheck, TriangleAlert, GitCompare, Download, Database } from '@lucide/svelte';
+  import { RefreshCw, ShieldCheck, TriangleAlert, GitCompare, Download } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
@@ -59,15 +59,10 @@
   }
 
   // 下载必须带 X-Panel-Token（裸 <a href> 不会携带自定义头 → 必然 401）
-  async function exportSave(format: 'iptables-save' | 'nft' | 'json') {
-    const name =
-      format === 'nft'
-        ? 'firepanel-nft-ruleset.nft'
-        : format === 'iptables-save'
-          ? 'firepanel-iptables.v4'
-          : 'firepanel-backup.json';
+  // 内核格式（iptables-save / nft）导出在「备份迁移」页
+  async function exportSave() {
     try {
-      await downloadFile(`/system/backup?format=${format}`, name);
+      await downloadFile('/system/backup?format=json', 'firepanel-backup.json');
       toast.success('导出已开始下载');
     } catch (e) {
       toast.error(e instanceof Error ? `导出失败: ${e.message}` : String(e));
@@ -118,7 +113,7 @@
         检测到 {drift.missing.length + drift.extra.length + drift.modified.length} 处漂移
       </h3>
       <p class="mt-1 text-[12px] text-muted-foreground">
-        可能是其他工具或人工修改了面板链。点击「重新同步」以面板数据为准覆盖；或在其他机器上确认来源后再处理。
+        可能是其他工具或人工修改了面板链。
       </p>
       <div class="mt-3 space-y-1.5 font-mono text-[11.5px]">
         {#each drift.modified as m (m.tag)}
@@ -160,22 +155,20 @@
         <div class="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <div>
             <h2 class="text-sm font-semibold">面板链规则（内核实时）</h2>
-            <p class="mt-0.5 text-[11.5px] text-muted-foreground">
-              后端 {snap.backend} · 共 {snap.rules.length} 条
-            </p>
+            <p class="font-num mt-0.5 text-[11.5px] text-muted-foreground">共 {snap.rules.length} 条</p>
           </div>
           <div class="flex gap-1.5">
             <Button variant="ghost" size="icon" class="size-8" onclick={load} aria-label="刷新">
               <RefreshCw size={14} />
             </Button>
-            <Button variant="ghost" size="icon" class="size-8" onclick={() => exportSave('json')} aria-label="导出备份">
+            <Button variant="ghost" size="icon" class="size-8" onclick={exportSave} aria-label="导出备份">
               <Download size={14} />
             </Button>
           </div>
         </div>
         {#if snap.rules.length === 0}
           <div class="p-4">
-            <EmptyState compact title="面板链为空" desc="创建转发规则或黑名单后，内核规则会显示在这里。" />
+            <EmptyState compact title="面板链为空" />
           </div>
         {:else}
           <div class="overflow-x-auto">
@@ -230,24 +223,6 @@
               </li>
             {/each}
           </ul>
-        </Card>
-
-        <Card class="p-4 shadow-soft">
-          <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold">
-            <Database size={14} class="text-muted-foreground" />
-            备份导出
-          </h3>
-          <p class="mb-3 text-[11.5px] leading-relaxed text-muted-foreground">
-            导出当前内核规则用于跨机迁移或灾备。
-          </p>
-          <div class="grid gap-2">
-            <Button variant="outline" size="sm" onclick={() => exportSave('json')}>面板期望状态（JSON）</Button>
-            {#if snap.backend === 'iptables'}
-              <Button variant="outline" size="sm" onclick={() => exportSave('iptables-save')}>iptables-save 格式</Button>
-            {:else}
-              <Button variant="outline" size="sm" onclick={() => exportSave('nft')}>nft ruleset 格式</Button>
-            {/if}
-          </div>
         </Card>
       </div>
     </div>

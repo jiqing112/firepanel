@@ -24,8 +24,6 @@ export interface NavItem {
   path: string;
   labelKey: string;
   icon: NavIcon;
-  /** 所属交付阶段，用于原型阶段的标签展示 */
-  phase?: 2 | 3 | 4 | 5;
 }
 
 export interface NavGroup {

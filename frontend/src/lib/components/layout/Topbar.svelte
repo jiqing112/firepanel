@@ -7,7 +7,7 @@
   import { fwinfo, loadFwInfo } from '$lib/stores/fwinfo.svelte';
   import { session } from '$lib/stores/session.svelte';
 
-  let { title, subtitle }: { title: string; subtitle?: string } = $props();
+  let { title }: { title: string } = $props();
 
   let refreshing = $state(false);
   function refresh() {
@@ -28,9 +28,6 @@
 
     <div class="min-w-0 flex-1">
       <h1 class="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
-      {#if subtitle}
-        <p class="truncate text-xs text-muted-foreground">{subtitle}</p>
-      {/if}
     </div>
 
     <div class="flex items-center gap-1.5">

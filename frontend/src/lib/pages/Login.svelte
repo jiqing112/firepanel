@@ -50,10 +50,7 @@
   <div class="relative w-full max-w-[380px]" in:fly={{ y: 14, duration: 350, easing: cubicOut }}>
     <div class="mb-7 flex flex-col items-center gap-3 text-center">
       <BrandMark size={46} />
-      <div>
-        <h1 class="text-[19px] font-semibold tracking-tight">{t('app.name')}</h1>
-        <p class="mt-1 text-[12.5px] text-muted-foreground">{t('app.slogan')}</p>
-      </div>
+      <h1 class="text-[19px] font-semibold tracking-tight">{t('app.name')}</h1>
     </div>
 
     <div class="rounded-2xl border border-border/70 bg-card p-6 shadow-lift">
