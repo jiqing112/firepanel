@@ -13,11 +13,11 @@
 
 | 网络拓扑 · 树形 | Web 服务 · 监听器与站点 |
 |---|---|
-| ![网络拓扑](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-topology-tree.png) | ![Web 服务](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-web.png) |
+| ![网络拓扑](docs/images/shot-topology-tree.png) | ![Web 服务](docs/images/shot-web.png) |
 | 网络拓扑 · 桑基布局（连线宽度按流量分配） | 另有径向 / 旭日图 / 矩形树图 / 气泡图等 7 种布局 |
-| ![桑基图](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-topology.png) | |
+| ![桑基图](docs/images/shot-topology.png) | |
 
-> 升级说明：旧「反向代理」域名与路由会自动迁移为站点；Docker 用户 80/443/18088 需空闲。完整变更见 [Release Notes](https://github.com/jiqing112/firepanel/releases/tag/v1.1.0)。
+> 升级说明：旧「反向代理」域名与路由会自动迁移为站点；Docker 用户 80/443/18088 需空闲。完整变更见 [Release Notes](https://github.com/jiqing112/firepanel/releases/tag/v1.2.0)。
 
 ## 核心特性
 
