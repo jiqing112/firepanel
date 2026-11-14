@@ -54,28 +54,26 @@ func ProbePort(port int, runner Runner) PortProbe {
 	return p
 }
 
-// EnvReport 反代运行环境报告（端口探测 + 推荐 + Caddy 探测）。
+// EnvReport Web 服务运行环境报告（端口探测 + 推荐）。
 type EnvReport struct {
 	HTTP        PortProbe `json:"http"`
 	HTTPS       PortProbe `json:"https"`
-	Engine      string    `json:"engine"`
 	ListenHTTP  string    `json:"listen_http"`
 	ListenHTTPS string    `json:"listen_https"`
+	HTTPMode    string    `json:"http_mode"`
 	Recommended struct {
 		HTTPPort  int    `json:"http_port"`
 		HTTPSPort int    `json:"https_port"`
 		Challenge string `json:"challenge"` // http-01 | tls-alpn-01 | dns-01
 		Note      string `json:"note"`
 	} `json:"recommended"`
-	CaddyInstalled bool   `json:"caddy_installed"`
-	CaddyVersion   string `json:"caddy_version"`
 }
 
-// Environment 探测 80/443 与 Caddy，给出推荐配置。
+// Environment 探测 80/443，给出推荐配置。listen 为当前 Web 服务的监听现状（展示用）。
 // 端口被面板自身占用时视为「挑战可达」：certmagic 绑定失败但端口有响应时
 // 会把挑战委托给持有者，本面板的监听器均挂有挑战处理器。
-func (m *Manager) Environment(runner Runner) EnvReport {
-	rep := EnvReport{Engine: m.mode, ListenHTTP: m.httpAddr, ListenHTTPS: m.httpsAddr}
+func (m *Manager) Environment(runner Runner, listenHTTP, listenHTTPS, httpMode string) EnvReport {
+	rep := EnvReport{ListenHTTP: listenHTTP, ListenHTTPS: listenHTTPS, HTTPMode: httpMode}
 	rep.HTTP = ProbePort(80, runner)
 	rep.HTTPS = ProbePort(443, runner)
 	selfOK := isSelfProcess()
@@ -100,15 +98,6 @@ func (m *Manager) Environment(runner Runner) EnvReport {
 	}
 	rep.Recommended.HTTPPort = pickPort(rep.HTTP.Bindable || rep.HTTP.Occupier == selfOK, 80, 8080)
 	rep.Recommended.HTTPSPort = pickPort(rep.HTTPS.Bindable || rep.HTTPS.Occupier == selfOK, 443, 8443)
-
-	if runner != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if v, err := runner.Run(ctx, "caddy", "version"); err == nil {
-			rep.CaddyInstalled = true
-			rep.CaddyVersion = strings.TrimSpace(v)
-		}
-	}
 	return rep
 }
 

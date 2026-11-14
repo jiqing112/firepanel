@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -22,27 +24,31 @@ type Bundle struct {
 	Jails       []JailConfig     `json:"jails"`
 	PortRecords []PortRecord     `json:"port_records"`
 	PortAllows  []PortAllowRule  `json:"port_allow_rules"`
-	RPDomains   []RPDomainBackup `json:"rp_domains"`
-	RPRoutes    []RPRoute        `json:"rp_routes"`
+	WSListeners []WSListener     `json:"ws_listeners"`
+	WSSites     []WSSiteBackup   `json:"ws_sites"`
+	// RPDomains / RPRoutes 为旧版反代模型的备份字段：恢复时转换为站点写入，
+	// 新备份不再生成这两组数据
+	RPDomains []RPDomainBackup `json:"rp_domains,omitempty"`
+	RPRoutes  []RPRoute        `json:"rp_routes,omitempty"`
 }
 
-// RPDomainBackup 反代域名 + 手动证书（RPDomain 的 cert_pem/key_pem 平时不参与 JSON，
+// WSSiteBackup Web 服务站点 + 证书（WSSite 的 cert_pem/key_pem 平时不参与 JSON，
 // 只在备份/恢复结构中显式带出，避免列表接口泄露私钥）。
-type RPDomainBackup struct {
-	RPDomain
+type WSSiteBackup struct {
+	WSSite
 	CertPEM string `json:"cert_pem,omitempty"`
 	KeyPEM  string `json:"key_pem,omitempty"`
 }
 
-func toBackupDomain(d RPDomain) RPDomainBackup {
-	return RPDomainBackup{RPDomain: d, CertPEM: d.CertPEM, KeyPEM: d.KeyPEM}
+func toBackupWSSite(s WSSite) WSSiteBackup {
+	return WSSiteBackup{WSSite: s, CertPEM: s.CertPEM, KeyPEM: s.KeyPEM}
 }
 
-func fromBackupDomain(b RPDomainBackup) RPDomain {
-	d := b.RPDomain
-	d.CertPEM = b.CertPEM
-	d.KeyPEM = b.KeyPEM
-	return d
+func fromBackupWSSite(b WSSiteBackup) WSSite {
+	s := b.WSSite
+	s.CertPEM = b.CertPEM
+	s.KeyPEM = b.KeyPEM
+	return s
 }
 
 // ExportBundle 读取全量结构化配置（用于备份与回滚快照）。
@@ -78,15 +84,15 @@ func (s *Store) ExportBundle() (Bundle, error) {
 	if b.PortAllows, err = s.ListPortAllowRules(); err != nil {
 		return b, fmt.Errorf("读取入站放行规则: %w", err)
 	}
-	domains, err := s.ListRPDomains()
+	if b.WSListeners, err = s.ListWSListeners(); err != nil {
+		return b, fmt.Errorf("读取监听: %w", err)
+	}
+	sites, err := s.ListWSSites()
 	if err != nil {
-		return b, fmt.Errorf("读取反代域名: %w", err)
+		return b, fmt.Errorf("读取站点: %w", err)
 	}
-	for _, d := range domains {
-		b.RPDomains = append(b.RPDomains, toBackupDomain(d))
-	}
-	if b.RPRoutes, err = s.ListRPRoutes(0); err != nil {
-		return b, fmt.Errorf("读取反代路由: %w", err)
+	for _, d := range sites {
+		b.WSSites = append(b.WSSites, toBackupWSSite(d))
 	}
 	return b, nil
 }
@@ -96,7 +102,7 @@ func (b Bundle) IsEmpty() bool {
 	return len(b.Forwards) == 0 && len(b.IPLists) == 0 && len(b.RateLimits) == 0 &&
 		len(b.NATRules) == 0 && len(b.Tasks) == 0 && len(b.Alerts) == 0 &&
 		len(b.Jails) == 0 && len(b.PortRecords) == 0 && len(b.PortAllows) == 0 &&
-		len(b.RPDomains) == 0 && len(b.RPRoutes) == 0
+		len(b.WSListeners) == 0 && len(b.WSSites) == 0 && len(b.RPDomains) == 0
 }
 
 func ts(t time.Time) string {
@@ -138,8 +144,8 @@ func (s *Store) ReplaceAll(b Bundle) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, q := range []string{
-		`DELETE FROM rp_routes`,
-		`DELETE FROM rp_domains`,
+		`DELETE FROM ws_sites`,
+		`DELETE FROM ws_listeners`,
 		`DELETE FROM forward_rules`,
 		`DELETE FROM ip_lists`,
 		`DELETE FROM rate_limit_rules`,
@@ -240,28 +246,70 @@ func (s *Store) ReplaceAll(b Bundle) error {
 			return fmt.Errorf("恢复入站放行规则 %d: %w", p.ID, err)
 		}
 	}
-	for i := range b.RPDomains {
-		d := fromBackupDomain(b.RPDomains[i])
-		if _, err := tx.Exec(`INSERT INTO rp_domains
-			(id,domain,enabled,tls_mode,challenge,caddy_opts,cert_pem,key_pem,cert_status,cert_error,cert_expires_at,remark,created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			idOrNil(d.ID), d.Domain, boolIntStore(d.Enabled), d.TLSMode, d.Challenge, d.CaddyOpts,
-			d.CertPEM, d.KeyPEM, d.CertStatus, d.CertError, tsPtr(d.CertExpiresAt), d.Remark, ts(d.CreatedAt)); err != nil {
-			return fmt.Errorf("恢复反代域名 %d: %w", d.ID, err)
+	for i := range b.WSListeners {
+		l := b.WSListeners[i]
+		cfg, _ := json.Marshal(l.Config)
+		if _, err := tx.Exec(`INSERT INTO ws_listeners
+			(id,name,enabled,config,remark,created_at) VALUES(?,?,?,?,?,?)`,
+			idOrNil(l.ID), l.Name, boolIntStore(l.Enabled), string(cfg), l.Remark, ts(l.CreatedAt)); err != nil {
+			return fmt.Errorf("恢复监听 %d: %w", l.ID, err)
 		}
 	}
-	for i := range b.RPRoutes {
-		r := b.RPRoutes[i]
-		if _, err := tx.Exec(`INSERT INTO rp_routes
-			(id,domain_id,path_match,upstream_url,ws_enabled,health_path,enabled,health_status,health_checked_at,created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			idOrNil(r.ID), r.DomainID, r.PathMatch, r.UpstreamURL, boolIntStore(r.WsEnabled),
-			r.HealthPath, boolIntStore(r.Enabled), r.HealthStatus, tsPtr(r.HealthCheckedAt), ts(r.CreatedAt)); err != nil {
-			return fmt.Errorf("恢复反代路由 %d: %w", r.ID, err)
+	for i := range b.WSSites {
+		s := fromBackupWSSite(b.WSSites[i])
+		if err := insertWSSite(tx, &s); err != nil {
+			return fmt.Errorf("恢复站点 %d: %w", s.ID, err)
+		}
+	}
+	// 旧版反代备份：转换为站点写入（路由聚合在 RPDomain 侧完成不了，
+	// 这里逐域名转换；RPDomainBackup 只在旧文件中出现）
+	if len(b.RPDomains) > 0 {
+		routesByDomain := map[int64][]RPRoute{}
+		for _, r := range b.RPRoutes {
+			routesByDomain[r.DomainID] = append(routesByDomain[r.DomainID], r)
+		}
+		for i := range b.RPDomains {
+			d := fromBackupDomain(b.RPDomains[i])
+			s := ConvertRPDomain(d, routesByDomain[d.ID])
+			if err := insertWSSite(tx, s); err != nil {
+				return fmt.Errorf("恢复旧反代域名 %s: %w", d.Domain, err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交恢复事务: %w", err)
+	}
+	return nil
+}
+
+// fromBackupDomain 兼容旧备份结构（RPDomainBackup 平铺字段）。
+func fromBackupDomain(b RPDomainBackup) RPDomain {
+	d := b.RPDomain
+	d.CertPEM = b.CertPEM
+	d.KeyPEM = b.KeyPEM
+	return d
+}
+
+// RPDomainBackup 旧版反代域名的备份结构（只用于读取旧备份文件）。
+type RPDomainBackup struct {
+	RPDomain
+	CertPEM string `json:"cert_pem,omitempty"`
+	KeyPEM  string `json:"key_pem,omitempty"`
+}
+
+// insertWSSite 在事务内插入站点行（恢复备份与回滚快照用）。
+func insertWSSite(tx *sql.Tx, s *WSSite) error {
+	if s.Config == nil {
+		s.Config = json.RawMessage(`{}`)
+	}
+	domains, _ := json.Marshal(s.Domains)
+	if _, err := tx.Exec(`INSERT INTO ws_sites
+		(id,listener_id,name,domains,type,enabled,is_default,config,tls_mode,challenge,cert_pem,key_pem,cert_status,cert_error,cert_expires_at,remark,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		idOrNil(s.ID), idOrNil(s.ListenerID), s.Name, string(domains), s.Type, boolIntStore(s.Enabled), boolIntStore(s.Default),
+		string(s.Config), s.TLSMode, s.Challenge, s.CertPEM, s.KeyPEM, s.CertStatus, s.CertError,
+		tsPtr(s.CertExpiresAt), s.Remark, ts(s.CreatedAt)); err != nil {
+		return err
 	}
 	return nil
 }

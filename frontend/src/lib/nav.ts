@@ -14,6 +14,7 @@ import {
   Settings,
   EthernetPort,
   Waves,
+  Workflow,
 } from '@lucide/svelte';
 import type { Component } from 'svelte';
 
@@ -46,6 +47,7 @@ export const navGroups: NavGroup[] = [
       { path: '/firewall', labelKey: 'nav.firewall', icon: ShieldBan },
       { path: '/iplists', labelKey: 'nav.iplists', icon: Globe },
       { path: '/proxy', labelKey: 'nav.proxy', icon: Network },
+      { path: '/proxy/topology', labelKey: 'nav.topology', icon: Workflow },
       { path: '/nat', labelKey: 'nav.nat', icon: ArrowRightLeft },
       { path: '/ratelimit', labelKey: 'nav.ratelimit', icon: Gauge },
       { path: '/fail2ban', labelKey: 'nav.fail2ban', icon: ShieldAlert },

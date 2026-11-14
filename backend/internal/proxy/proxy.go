@@ -1,7 +1,8 @@
-// Package proxy：L7 反向代理管理器。
-// 按域名 + 路径前缀路由到上游，支持 WebSocket 透传、手动证书与
-// certmagic（Let's Encrypt）自动证书（挑战方式按域名可选：HTTP-01 /
-// TLS-ALPN-01 / DNS-01）、上游健康检查、配置热重载。
+// Package proxy：自动证书层。
+// certmagic（Let's Encrypt）按挑战方式分组管理域名/IP 证书：HTTP-01 /
+// TLS-ALPN-01 / DNS-01，IP 证书走 shortlived profile（约 6.7 天，自动续期）。
+// Web 服务引擎（internal/webservice）在热重载时经 CertProvider 接口调用本包；
+// 面板自身的 HTTPS 也复用这里的证书存储。
 package proxy
 
 import (
@@ -13,8 +14,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,119 +21,7 @@ import (
 	"github.com/caddyserver/certmagic"
 )
 
-// RouteConfig 反代路由配置（与 store 解耦的输入模型）。
-type RouteConfig struct {
-	ID          int64  `json:"id"`
-	PathMatch   string `json:"path_match"`
-	UpstreamURL string `json:"upstream_url"`
-	WsEnabled   bool   `json:"ws_enabled"`
-	HealthPath  string `json:"health_path"`
-	Enabled     bool   `json:"enabled"`
-}
-
-// DomainConfig 域名配置。
-type DomainConfig struct {
-	ID         int64         `json:"id"`
-	Domain     string        `json:"domain"`
-	Enabled    bool          `json:"enabled"`
-	TLSMode    string        `json:"tls_mode"`   // auto|manual|none
-	Challenge  string        `json:"challenge"`  // ""=auto | http | alpn | dns（仅 auto 生效）
-	CaddyOpts  string        `json:"caddy_opts"` // Caddy 站点选项 JSON：encode/security_headers/log_access
-	CertPEM    string        `json:"-"`
-	KeyPEM     string        `json:"-"`
-	CertStatus string        `json:"cert_status"`
-	Routes     []RouteConfig `json:"routes"`
-}
-
-// HealthResult 单条路由健康探测结果回调。
-type HealthResult struct {
-	RouteID int64
-	Domain  string
-	Status  string // ok|down
-	Detail  string
-}
-
-// EventCallback 状态事件回调（WS 广播用）。
-type EventCallback func(eventType, message, detail string)
-
-// Options Manager 构造参数。
-type Options struct {
-	Mode       string // builtin（默认，面板自研引擎）| caddy（托管给本机 Caddy）
-	HTTPAddr   string // builtin：反代 HTTP 监听；caddy：Caddy 的 HTTP 监听（构建配置用）
-	HTTPSAddr  string // builtin：反代 HTTPS 监听；caddy：Caddy 的 HTTPS 监听
-	CertDir    string // builtin：certmagic 证书存储目录（面板自身证书也用它）
-	CaddyAdmin string // caddy 模式：Admin API 地址
-}
-
-// Manager 反代运行时。
-type Manager struct {
-	log        *slog.Logger
-	mode       string // builtin | caddy
-	httpAddr   string
-	httpsAddr  string
-	certDir    string
-	caddyAdmin string
-	OnEvent    EventCallback
-	// OnCertStatus 证书申请结果回写（app 层更新数据库 cert_status/cert_error）
-	OnCertStatus func(domainID int64, status, errMsg string)
-
-	// mu 保护运行态。读多写少（每个请求都要查域名/路由），用 RWMutex：
-	// 之前所有代理请求都走互斥锁，高并发下会被串行化。
-	mu      sync.RWMutex
-	domains map[string]*domain // key: 小写域名
-
-	// 证书配置按挑战分组：auto（HTTP+ALPN）/ http / alpn / dns / ip（shortlived）
-	cache     *certmagic.Cache
-	magic     map[string]*certmagic.Config // group -> config
-	nameGroup map[string]string            // 已管理证书名 -> group（续期路由用）
-	managed   map[string]string            // 已管理域名 -> group
-
-	dnsCfg      DNSProviderConfig   // DNS-01 凭据（可能运行中更新，需重建 dns 组）
-	runner      Runner              // 系统命令执行器（Caddyfile 接管部署用；nil=走 Admin API）
-	caddyGlobal CaddyGlobalSettings // Caddyfile 全局选项
-	caddyCustom string              // 用户自定义片段（原样追加，重新生成不丢失）
-
-	httpSrv  *http.Server
-	httpsSrv *http.Server
-	started  bool
-}
-
-// SetRunner 注入命令执行器（启用 Caddyfile 完全接管部署）。
-func (m *Manager) SetRunner(r Runner) {
-	m.mu.Lock()
-	m.runner = r
-	m.mu.Unlock()
-}
-
-// SetCaddyCustom 更新用户自定义片段并热重载配置。
-func (m *Manager) SetCaddyCustom(custom string) {
-	m.mu.Lock()
-	m.caddyCustom = custom
-	m.mu.Unlock()
-}
-
-// CaddyCustom 当前自定义片段。
-func (m *Manager) CaddyCustom() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.caddyCustom
-}
-
-// SetCaddyGlobal 更新 Caddyfile 全局选项（email/debug）。
-func (m *Manager) SetCaddyGlobal(g CaddyGlobalSettings) {
-	m.mu.Lock()
-	m.caddyGlobal = g
-	m.mu.Unlock()
-}
-
-// CaddyGlobal 当前全局选项。
-func (m *Manager) CaddyGlobal() CaddyGlobalSettings {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.caddyGlobal
-}
-
-// 证书配置分组名。
+// 证书配置按挑战分组：auto（HTTP+ALPN）/ http / alpn / dns / ip（shortlived）
 const (
 	groupAuto = "auto" // HTTP-01 + TLS-ALPN-01（默认；certmagic 对被占用端口自动委托）
 	groupHTTP = "http"
@@ -143,74 +30,35 @@ const (
 	groupIP   = "ip" // shortlived profile（LE IP 证书）
 )
 
-const (
-	ModeBuiltin = "builtin"
-	ModeCaddy   = "caddy"
-)
+// Options Manager 构造参数。
+type Options struct {
+	CertDir string // certmagic 证书存储目录（面板自身证书也用它）
+}
+
+// Manager 证书管理器。实现 webservice.CertProvider。
+type Manager struct {
+	log     *slog.Logger
+	certDir string
+	OnEvent func(eventType, message, detail string)
+
+	// mu 保护运行态。读多写少（每个 TLS 握手都要查证书），用 RWMutex
+	mu      sync.RWMutex
+	cache   *certmagic.Cache
+	magic   map[string]*certmagic.Config // group -> config
+	nameGroup map[string]string          // 已管理证书名 -> group（续期路由用）
+	managed   map[string]string          // 已管理域名 -> group
+
+	dnsCfg DNSProviderConfig // DNS-01 凭据（可能运行中更新，需重建 dns 组）
+}
 
 func NewManager(log *slog.Logger, opts Options) *Manager {
-	mode := opts.Mode
-	if mode != ModeCaddy {
-		mode = ModeBuiltin
-	}
 	return &Manager{
-		log:        log,
-		mode:       mode,
-		httpAddr:   opts.HTTPAddr,
-		httpsAddr:  opts.HTTPSAddr,
-		certDir:    opts.CertDir,
-		caddyAdmin: opts.CaddyAdmin,
-		domains:    map[string]*domain{},
-		magic:      map[string]*certmagic.Config{},
-		nameGroup:  map[string]string{},
-		managed:    map[string]string{},
+		log:       log,
+		certDir:   opts.CertDir,
+		magic:     map[string]*certmagic.Config{},
+		nameGroup: map[string]string{},
+		managed:   map[string]string{},
 	}
-}
-
-// Mode 当前反代模式。
-func (m *Manager) Mode() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.mode
-}
-
-// Reconfigure 运行中切换引擎与监听端口（UI「运行环境」用）。
-// builtin 监听中的端口立即释放，由随后的 Reload 在新地址上重建；
-// caddy 模式下监听归 Caddy 管，仅切换管理目标。证书缓存保留（面板 HTTPS 不受影响）。
-func (m *Manager) Reconfigure(mode, httpAddr, httpsAddr string) error {
-	if mode != ModeBuiltin && mode != ModeCaddy {
-		return fmt.Errorf("未知引擎: %s", mode)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.mode == ModeBuiltin && m.started {
-		if m.httpSrv != nil {
-			_ = m.httpSrv.Close()
-		}
-		if m.httpsSrv != nil {
-			_ = m.httpsSrv.Close()
-		}
-		m.started = false
-	}
-	m.mode = mode
-	if httpAddr != "" {
-		m.httpAddr = httpAddr
-	}
-	if httpsAddr != "" {
-		m.httpsAddr = httpsAddr
-	}
-	return nil
-}
-
-type domain struct {
-	cfg    DomainConfig
-	cert   *tls.Certificate // manual 模式
-	routes []*routeEntry    // 按路径长度降序
-}
-
-type routeEntry struct {
-	cfg RouteConfig
-	rp  *httputil.ReverseProxy
 }
 
 func (m *Manager) emit(t, msg, detail string) {
@@ -219,169 +67,133 @@ func (m *Manager) emit(t, msg, detail string) {
 	}
 }
 
-/* ------------------------- 配置热重载 ------------------------- */
+/* ------------------------- CertProvider 接口 ------------------------- */
 
-// Reload 用全量配置替换运行态（diff 域名，必要时管理/解除 ACME）。
-// 注意：证书签发（ManageSync）与 Caddy 下发是秒级网络操作，必须在锁外执行，
-// 否则会阻塞反代全部请求与状态查询。
-func (m *Manager) Reload(ctx context.Context, cfgs []DomainConfig) error {
-	type pendingCert struct {
-		domainID int64
-		domain   string
-		group    string
+// Manage 确保域名的自动证书已签发可用。challenge 为 ""（auto）/ http / alpn / dns。
+// IP 名称固定走 shortlived profile；私有/回环 IP 无法获得公网证书，返回明确错误。
+func (m *Manager) Manage(ctx context.Context, domain, challenge string) error {
+	group, err := m.challengeGroup(domain, challenge)
+	if err != nil {
+		return err
 	}
-	var toManage []pendingCert
-
+	if group == groupIP && isNonPublicIP(domain) {
+		return fmt.Errorf("内网/私有 IP 无法申请公网证书，请改用「手动证书 → 自动生成自签证书」或无 TLS 模式")
+	}
 	m.mu.Lock()
-	next := map[string]*domain{}
-	for _, c := range cfgs {
-		if !c.Enabled {
-			continue
-		}
-		key := strings.ToLower(c.Domain)
-		d := &domain{cfg: c}
-		if c.TLSMode == "manual" && c.CertPEM != "" && c.KeyPEM != "" {
-			cert, err := tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM))
-			if err != nil {
-				m.emit("proxy_cert_error", "手动证书解析失败: "+c.Domain, err.Error())
-			} else {
-				d.cert = &cert
-			}
-		}
-		for _, rc := range c.Routes {
-			if !rc.Enabled {
-				continue
-			}
-			re, err := m.buildRoute(rc)
-			if err != nil {
-				m.emit("proxy_route_error", "路由构建失败: "+c.Domain+" "+rc.PathMatch, err.Error())
-				continue
-			}
-			d.routes = append(d.routes, re)
-		}
-		next[key] = d
-	}
-
-	// certmagic 增量管理清单（仅 builtin 模式的 auto 模式；移除的域名保留证书
-	// 文件但不再续期）。IP 名称走 shortlived profile；域名按 challenge 分组。
-	if m.mode == ModeBuiltin {
-		m.ensureCertMagicLocked()
-		for _, d := range next {
-			if d.cfg.TLSMode != "auto" {
-				continue
-			}
-			group, err := m.challengeGroupLocked(d.cfg.Domain, d.cfg.Challenge)
-			if err != nil {
-				m.emit("proxy_cert_error", "无法为 "+d.cfg.Domain+" 确定签发方式", err.Error())
-				m.onCertStatus(d.cfg.ID, "error", err.Error())
-				continue
-			}
-			// 私有/回环 IP 无法获得公网证书，提前拦截并给出明确引导
-			if group == groupIP && isNonPublicIP(d.cfg.Domain) {
-				msg := "内网/私有 IP 无法申请公网证书，请改用「手动证书 → 自动生成自签证书」或无 TLS 模式"
-				m.emit("proxy_cert_error", "无法为 "+d.cfg.Domain+" 自动签发证书", msg)
-				m.onCertStatus(d.cfg.ID, "error", msg)
-				continue
-			}
-			if m.managed[d.cfg.Domain] == group {
-				continue
-			}
-			toManage = append(toManage, pendingCert{domainID: d.cfg.ID, domain: d.cfg.Domain, group: group})
-		}
-	}
-
-	// manual 证书在 caddy 模式下不下发（需用户在 Caddy 侧配置），提示差异
-	if m.mode == ModeCaddy {
-		for _, d := range next {
-			if d.cfg.TLSMode == "manual" {
-				m.emit("proxy_cert_error", "caddy 模式不支持面板下发手动证书: "+d.cfg.Domain,
-					"请在 Caddy 侧加载证书，或改用 auto/none 模式")
-			}
-		}
-	}
-
-	m.domains = next
-
-	if m.mode == ModeBuiltin && !m.started && len(next) > 0 {
-		if err := m.startLocked(); err != nil {
-			m.mu.Unlock()
-			return err
-		}
-	}
+	cfg := m.groupConfigLocked(group)
 	m.mu.Unlock()
-
-	// ---- 锁外：秒级网络操作 ----
-	var firstErr error
-	switch m.mode {
-	case ModeBuiltin:
-		for _, pc := range toManage {
-			m.mu.Lock()
-			cfg := m.magic[pc.group]
-			already := m.managed[pc.domain] == pc.group
-			m.mu.Unlock()
-			if already || cfg == nil {
-				continue
-			}
-			if err := cfg.ManageSync(ctx, []string{pc.domain}); err != nil {
-				m.emit("proxy_cert_error", "自动证书申请失败: "+pc.domain, err.Error())
-				m.onCertStatus(pc.domainID, "error", err.Error())
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			m.mu.Lock()
-			m.managed[pc.domain] = pc.group
-			m.nameGroup[pc.domain] = pc.group
-			m.mu.Unlock()
-			m.onCertStatus(pc.domainID, "ok", "")
-		}
-	case ModeCaddy:
-		// 面板只维护「托管段」：读取服务器实际 Caddyfile → 合并托管段 → validate →
-		// 备份 → 写入 → reload。托管段之外的内容（用户自有站点/snippets）不会被覆盖。
-		// 全局设置由 app 层经 SetCaddyGlobal 注入；runner 经 SetRunner 注入。
-		if m.runner != nil {
-			m.mu.Lock()
-			g := m.caddyGlobal
-			custom := m.caddyCustom
-			m.mu.Unlock()
-			ctxDeploy, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
-			res, err := m.DeployGenerated(ctxDeploy, cfgs, g, custom)
-			if err != nil {
-				m.emit("proxy_caddy_error", "Caddyfile 下发失败（原文件未改动）", err.Error())
-				return err
-			}
-			if res.Skipped {
-				// 内容没变：不写盘、不备份、不重载（避免每次启动产生一份 .bak）
-				m.log.Info("Caddyfile 无变化，跳过写入与重载", "domains", len(next), "mode", res.Mode.Label())
-				break
-			}
-			detail := fmt.Sprintf("%d 个域名 · %s", len(next), res.Mode.Label())
-			if res.Backup != "" {
-				detail += " · 备份 " + res.Backup
-			}
-			m.emit("proxy_caddy_ok", "Caddyfile 已合并写入并重载", detail)
-		} else {
-			// 无 runner（测试/嵌入）：走 Admin API JSON
-			body := BuildCaddyConfig(cfgs, m.httpAddr, m.httpsAddr)
-			ctxLoad, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			if err := CaddyLoad(ctxLoad, m.caddyAdmin, body, 8*time.Second); err != nil {
-				m.emit("proxy_caddy_error", "Caddy 配置下发失败", err.Error())
-				return err
-			}
-			m.emit("proxy_caddy_ok", "Caddy 配置已下发", fmt.Sprintf("%d 个域名", len(next)))
-		}
+	if err := cfg.ManageSync(ctx, []string{domain}); err != nil {
+		return err
 	}
-	return firstErr
+	m.mu.Lock()
+	m.managed[domain] = group
+	m.nameGroup[domain] = group
+	m.mu.Unlock()
+	return nil
 }
 
-// challengeGroupLocked 决定域名的证书配置分组（需持 m.mu）。
+// GetCertificate 按 SNI 取证书（TLS 握手回调）。
+// 空 SNI（客户端按 IP 直连，RFC 6066 不发送 SNI）时回落到已管理的 IP 证书。
+func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	name := strings.ToLower(hello.ServerName)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tryCfg := func(group string, h *tls.ClientHelloInfo) (*tls.Certificate, bool) {
+		cfg := m.magic[group]
+		if cfg == nil {
+			return nil, false
+		}
+		if c, err := cfg.GetCertificate(h); err == nil {
+			return c, true
+		}
+		return nil, false
+	}
+	if g, ok := m.nameGroup[name]; ok {
+		if c, ok := tryCfg(g, hello); ok {
+			return c, nil
+		}
+	}
+	// 空 SNI / 未匹配：尝试所有已管理的 IP 名称（IP 直连场景）
+	if name == "" || isIPName(name) {
+		for n, g := range m.nameGroup {
+			if !isIPName(n) {
+				continue
+			}
+			if c, ok := tryCfg(g, &tls.ClientHelloInfo{ServerName: n}); ok {
+				return c, nil
+			}
+		}
+	}
+	// 兜底：面板自身证书 / 未记录分组的历史证书
+	for _, g := range []string{groupIP, groupAuto, groupHTTP, groupALPN, groupDNS} {
+		if c, ok := tryCfg(g, hello); ok {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("no certificate for %s", name)
+}
+
+// Expiry 查询自动证书的到期时间。
+func (m *Manager) Expiry(domainName string) (time.Time, bool) {
+	return m.CertExpiry(domainName)
+}
+
+// HTTPChallengeHandler 让 HTTP-01 挑战在任意 Web 服务监听端口上可达。
+// 各 ACME issuer 依次尝试处理；非挑战请求直接透传。
+func (m *Manager) HTTPChallengeHandler(next http.Handler) http.Handler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, g := range []string{groupAuto, groupHTTP, groupIP} {
+		if cfg := m.magic[g]; cfg != nil {
+			if iss := acmeIssuerOf(cfg); iss != nil {
+				next = iss.HTTPChallengeHandler(next)
+			}
+		}
+	}
+	return next
+}
+
+/* ------------------------- 面板自身 TLS ------------------------- */
+
+// PanelTLSConfig 为面板自身 Web 端口返回 TLS 配置：
+// host 为 IP 时签发 Let's Encrypt shortlived 证书（约 6.7 天，自动续期），
+// 域名走默认 profile。证书与 Web 服务共享存储，同 host 不重复签发。
+func (m *Manager) PanelTLSConfig(ctx context.Context, host string) (*tls.Config, error) {
+	m.mu.Lock()
+	m.ensureCertMagicLocked()
+	group := groupAuto
+	if isIPName(host) {
+		group = groupIP
+	}
+	cfg := m.groupConfigLocked(group)
+	m.mu.Unlock()
+
+	if err := cfg.ManageSync(ctx, []string{host}); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.nameGroup[strings.ToLower(host)] = group
+	m.mu.Unlock()
+	return &tls.Config{
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// 客户端按 IP 直连时不发送 SNI（RFC 6066），回落到面板 host 证书
+			if hello.ServerName == "" {
+				hello.ServerName = host
+			}
+			return cfg.GetCertificate(hello)
+		},
+		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
+		MinVersion: tls.VersionTLS12,
+	}, nil
+}
+
+/* ------------------------- 内部 ------------------------- */
+
+// challengeGroup 决定域名的证书配置分组。
 // IP 名称固定走 shortlived；challenge 显式指定优先；auto=双挑战由 certmagic
 // 自行委托（80/443 被占用时 certmagic 会把挑战交给持有者代答——本面板自身
 // 监听或寄生前置均覆盖）。
-func (m *Manager) challengeGroupLocked(domainName, challenge string) (string, error) {
+func (m *Manager) challengeGroup(domainName, challenge string) (string, error) {
 	if isIPName(domainName) {
 		return groupIP, nil
 	}
@@ -400,86 +212,6 @@ func (m *Manager) challengeGroupLocked(domainName, challenge string) (string, er
 	default:
 		return "", fmt.Errorf("未知挑战方式: %s", challenge)
 	}
-}
-
-// onCertStatus 回调（app 层回写数据库）。
-func (m *Manager) onCertStatus(domainID int64, status, errMsg string) {
-	if m.OnCertStatus != nil {
-		m.OnCertStatus(domainID, status, errMsg)
-	}
-}
-
-func (m *Manager) buildRoute(rc RouteConfig) (*routeEntry, error) {
-	u, err := url.Parse(rc.UpstreamURL)
-	if err != nil {
-		return nil, fmt.Errorf("上游地址无效: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("上游协议仅支持 http/https")
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("上游地址缺少主机")
-	}
-	rp := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(u)
-			pr.SetXForwarded()
-			pr.Out.Host = pr.In.Host // 保留原始 Host（上游 vhost 场景）
-		},
-		// Go 标准库 ReverseProxy 原生支持 WebSocket Upgrade 透传
-		FlushInterval: 100 * time.Millisecond,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte("FirePanel: upstream unavailable"))
-		},
-	}
-	return &routeEntry{cfg: rc, rp: rp}, nil
-}
-
-/* ------------------------- HTTP 服务 ------------------------- */
-
-func (m *Manager) startLocked() error {
-	m.ensureCertMagicLocked()
-
-	handler := m.acmeChallengeHandler(http.HandlerFunc(m.ServeHTTP))
-
-	m.httpSrv = &http.Server{
-		Addr:              m.httpAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	m.httpsSrv = &http.Server{
-		Addr:              m.httpsAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		TLSConfig: &tls.Config{
-			GetCertificate: m.getCertificate,
-			NextProtos:     []string{"h2", "http/1.1", "acme-tls/1"},
-		},
-	}
-
-	lnHTTP, err := net.Listen("tcp", m.httpAddr)
-	if err != nil {
-		return fmt.Errorf("HTTP 监听 %s: %w", m.httpAddr, err)
-	}
-	lnHTTPS, err := net.Listen("tcp", m.httpsAddr)
-	if err != nil {
-		lnHTTP.Close()
-		return fmt.Errorf("HTTPS 监听 %s: %w", m.httpsAddr, err)
-	}
-	go func() {
-		if err := m.httpSrv.Serve(lnHTTP); err != nil && err != http.ErrServerClosed {
-			m.log.Error("反代 HTTP 退出", "err", err)
-		}
-	}()
-	go func() {
-		if err := m.httpsSrv.ServeTLS(lnHTTPS, "", ""); err != nil && err != http.ErrServerClosed {
-			m.log.Error("反代 HTTPS 退出", "err", err)
-		}
-	}()
-	m.started = true
-	m.log.Info("反向代理已启动", "http", m.httpAddr, "https", m.httpsAddr)
-	return nil
 }
 
 // ensureCertMagicLocked 初始化 certmagic 缓存与 auto/ip 两份基础配置（需持 m.mu）。
@@ -591,19 +323,6 @@ func (m *Manager) SetDNSProvider(cfg DNSProviderConfig) error {
 	return nil
 }
 
-// acmeChallengeHandler 让 HTTP-01 挑战在任何面板监听端口上可达。
-// 各 ACME issuer 依次尝试处理；非挑战请求直接透传。
-func (m *Manager) acmeChallengeHandler(next http.Handler) http.Handler {
-	for _, g := range []string{groupAuto, groupHTTP, groupIP} {
-		if cfg := m.magic[g]; cfg != nil {
-			if iss := acmeIssuerOf(cfg); iss != nil {
-				next = iss.HTTPChallengeHandler(next)
-			}
-		}
-	}
-	return next
-}
-
 // acmeIssuerOf 取配置中的 ACME issuer（挂 HTTP 挑战 handler 用）。
 func acmeIssuerOf(cfg *certmagic.Config) *certmagic.ACMEIssuer {
 	for _, iss := range cfg.Issuers {
@@ -612,38 +331,6 @@ func acmeIssuerOf(cfg *certmagic.Config) *certmagic.ACMEIssuer {
 		}
 	}
 	return nil
-}
-
-// PanelTLSConfig 为面板自身 Web 端口返回 TLS 配置：
-// host 为 IP 时签发 Let's Encrypt shortlived 证书（约 6.7 天，自动续期），
-// 域名走默认 profile。证书与反代共享存储，同 host 不重复签发。
-func (m *Manager) PanelTLSConfig(ctx context.Context, host string) (*tls.Config, error) {
-	m.mu.Lock()
-	m.ensureCertMagicLocked()
-	group := groupAuto
-	if isIPName(host) {
-		group = groupIP
-	}
-	cfg := m.groupConfigLocked(group)
-	m.mu.Unlock()
-
-	if err := cfg.ManageSync(ctx, []string{host}); err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	m.nameGroup[strings.ToLower(host)] = group
-	m.mu.Unlock()
-	return &tls.Config{
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			// 客户端按 IP 直连时不发送 SNI（RFC 6066），回落到面板 host 证书
-			if hello.ServerName == "" {
-				hello.ServerName = host
-			}
-			return cfg.GetCertificate(hello)
-		},
-		NextProtos: []string{"h2", "http/1.1", "acme-tls/1"},
-		MinVersion: tls.VersionTLS12,
-	}, nil
 }
 
 // isIPName 判断证书名称是否为 IP 地址。
@@ -660,58 +347,12 @@ func isNonPublicIP(name string) bool {
 	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
-// getCertificate 手动证书优先 → 按分组路由 → 依次兜底各配置。
-// 空 SNI（客户端按 IP 直连，RFC 6066 不发送 SNI）时回落到已管理的 IP 证书。
-func (m *Manager) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	name := strings.ToLower(hello.ServerName)
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if d := m.domains[name]; d != nil && d.cert != nil {
-		return d.cert, nil
-	}
-	tryCfg := func(group string, h *tls.ClientHelloInfo) (*tls.Certificate, bool) {
-		cfg := m.magic[group]
-		if cfg == nil {
-			return nil, false
-		}
-		if c, err := cfg.GetCertificate(h); err == nil {
-			return c, true
-		}
-		return nil, false
-	}
-	if g, ok := m.nameGroup[name]; ok {
-		if c, ok := tryCfg(g, hello); ok {
-			return c, nil
-		}
-	}
-	// 空 SNI / 未匹配：尝试所有已管理的 IP 名称（IP 直连场景）
-	if name == "" || isIPName(name) {
-		for n, g := range m.nameGroup {
-			if !isIPName(n) {
-				continue
-			}
-			if c, ok := tryCfg(g, &tls.ClientHelloInfo{ServerName: n}); ok {
-				return c, nil
-			}
-		}
-	}
-	// 兜底：面板自身证书 / 未记录分组的历史证书
-	for _, g := range []string{groupIP, groupAuto, groupHTTP, groupALPN, groupDNS} {
-		if c, ok := tryCfg(g, hello); ok {
-			return c, nil
-		}
-	}
-	return nil, fmt.Errorf("no certificate for %s", name)
-}
-
-// CertExpiry 查询证书到期时间（手动证书 / certmagic 缓存与存储）。
+// CertExpiry 查询证书到期时间（certmagic 缓存与存储）。
 func (m *Manager) CertExpiry(domainName string) (time.Time, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	m.ensureCertMagicLocked()
 	name := strings.ToLower(domainName)
-	if d := m.domains[name]; d != nil && d.cert != nil {
-		return leafNotAfter(d.cert)
-	}
 	hello := &tls.ClientHelloInfo{ServerName: name}
 	for _, g := range []string{groupAuto, groupIP, groupHTTP, groupALPN, groupDNS} {
 		cfg := m.magic[g]
@@ -737,117 +378,4 @@ func leafNotAfter(c *tls.Certificate) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return leaf.NotAfter, true
-}
-
-// ServeHTTP 域名 + 最长路径前缀路由。
-func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := strings.ToLower(strings.SplitN(r.Host, ":", 2)[0])
-	m.mu.RLock()
-	d := m.domains[host]
-	var route *routeEntry
-	if d != nil {
-		path := r.URL.Path
-		for _, re := range d.routes {
-			pm := normalizePathMatch(re.cfg.PathMatch)
-			if pm == "/" || path == pm || strings.HasPrefix(path, pm+"/") {
-				route = re
-				break
-			}
-		}
-	}
-	m.mu.RUnlock()
-
-	if d == nil || route == nil {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("FirePanel: no route for " + host + r.URL.Path))
-		return
-	}
-	route.rp.ServeHTTP(w, r)
-}
-
-func normalizePathMatch(p string) string {
-	if p == "" || p == "/" {
-		return "/"
-	}
-	p = strings.TrimRight(p, "/")
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return p
-}
-
-/* ------------------------- 健康检查 ------------------------- */
-
-// HealthTargets 返回当前需要探测的路由清单。
-func (m *Manager) HealthTargets() []HealthTarget {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var out []HealthTarget
-	for _, d := range m.domains {
-		for _, re := range d.routes {
-			out = append(out, HealthTarget{
-				RouteID:    re.cfg.ID,
-				Domain:     d.cfg.Domain,
-				Upstream:   re.cfg.UpstreamURL,
-				HealthPath: re.cfg.HealthPath,
-			})
-		}
-	}
-	return out
-}
-
-// HealthTarget 健康探测目标。
-type HealthTarget struct {
-	RouteID    int64  `json:"route_id"`
-	Domain     string `json:"domain"`
-	Upstream   string `json:"upstream"`
-	HealthPath string `json:"health_path"`
-}
-
-// Probe 探测一个目标：有 health_path 用 HTTP GET，否则 TCP 拨号。
-func (t HealthTarget) Probe(timeout time.Duration) HealthResult {
-	client := &http.Client{Timeout: timeout}
-	u := strings.TrimRight(t.Upstream, "/")
-	if t.HealthPath != "" {
-		u += t.HealthPath
-	} else {
-		u += "/"
-	}
-	resp, err := client.Get(u)
-	if err != nil {
-		return HealthResult{RouteID: t.RouteID, Domain: t.Domain, Status: "down", Detail: err.Error()}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 500 {
-		return HealthResult{RouteID: t.RouteID, Domain: t.Domain, Status: "down", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
-	}
-	return HealthResult{RouteID: t.RouteID, Domain: t.Domain, Status: "ok", Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
-}
-
-// Running 是否已就绪（builtin=本地监听已启动；caddy=Admin API 可达）。
-func (m *Manager) Running() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.mode == ModeCaddy {
-		if len(m.domains) == 0 {
-			return false
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		return CaddyRunning(ctx, m.caddyAdmin, 2*time.Second)
-	}
-	return m.started
-}
-
-// Stop 停止监听（面板关闭时调用）。
-func (m *Manager) Stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.httpSrv != nil {
-		_ = m.httpSrv.Close()
-	}
-	if m.httpsSrv != nil {
-		_ = m.httpsSrv.Close()
-	}
-	m.started = false
 }

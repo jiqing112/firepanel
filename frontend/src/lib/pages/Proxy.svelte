@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { Plus, Globe, Trash2, Pencil, Server, MoreHorizontal, Radio, ScanSearch, KeyRound, FileCode2, Download, Copy, Check, ExternalLink, RefreshCw, TriangleAlert } from '@lucide/svelte';
+  // Web 服务页：监听器卡片 + 站点列表 + 编辑对话框。1:1 复刻自 gately web/src/views/Web.vue。
+  // 复刻范围：监听器卡片（标签/启停/站点行/域名链接）、监听器对话框、站点对话框（基础/安全/流量/头）。
+  // 未复刻：排序拖拽/批量/Nginx 导入/站点级认证与 WAF（引擎未含）。
+  import {
+    Plus, Search, Server, Trash2, Pencil, ChevronsDownUp, ChevronsUpDown,
+    Workflow, ListFilter, ShieldCheck, ShieldAlert, CopyPlus, X, MoreHorizontal, ExternalLink,
+  } from '@lucide/svelte';
   import { Card } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -8,25 +14,35 @@
   import { Switch } from '$lib/components/ui/switch';
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Select from '$lib/components/ui/select';
+  import * as Tabs from '$lib/components/ui/tabs';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+  import * as Tooltip from '$lib/components/ui/tooltip';
   import { toast } from 'svelte-sonner';
   import EmptyState from '$lib/components/common/EmptyState.svelte';
-  import { backend, ApiError, onWSMessage, type ProxyDomain, type ProxyRoute, type ProxyEnv, type DNSProviderConfig, type CaddySiteOpts, type ProxyDomainInput } from '$lib/api';
-  import { fmtDateTime } from '$lib/utils';
+  import { backend, onWSMessage, type WSSite, type WSSiteInput, type WSListener, type WSListenerInput, type WSStatus, type UpstreamStatus } from '$lib/api';
+  import { fmtCompact } from '$lib/utils';
 
-  let items = $state<ProxyDomain[]>([]);
-  let running = $state(false);
+  type SiteType = WSSite['type'];
+
+  let listeners = $state<WSListener[]>([]);
+  let items = $state<WSSite[]>([]);
+  let status = $state<WSStatus | null>(null);
   let loading = $state(true);
-  let env = $state<ProxyEnv | null>(null);
-  let envOpen = $state(false);
-  let dnsCfg = $state<DNSProviderConfig | null>(null);
+  let saving = $state(false);
+  let filterText = $state('');
+  let compact = $state(false);
+  let collapsedListeners = $state<Set<string>>(new Set());
+  let confirmingDelete = $state('');
+
+  /* 状态快照轮询（统计列 + 后端健康） */
+  const live = $state<Record<number, { qps: number; requests: number; active: number; errors: number; upstreams: UpstreamStatus[] }>>({});
 
   async function load() {
     loading = true;
     try {
-      const r = await backend.proxyDomains();
-      items = r.items;
-      running = r.running;
+      const [ls, sites] = await Promise.all([backend.wsListeners(), backend.wsSites()]);
+      listeners = ls.items;
+      items = sites.items;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -34,430 +50,439 @@
     }
   }
 
-  async function loadEnv() {
+  async function loadStatus() {
     try {
-      env = (await backend.proxyEnv()).env;
-    } catch {
-      /* 探测失败不打断页面 */
-    }
-    try {
-      dnsCfg = (await backend.dnsConfig()).config;
-    } catch {
-      /* 同上 */
-    }
+      const r = await backend.wsStatus();
+      status = r.status;
+      const next: typeof live = {};
+      for (const s of r.status.sites) {
+        next[s.id] = { qps: s.qps, requests: s.requests, active: s.active, errors: s.errors, upstreams: [] };
+      }
+      for (const k of Object.keys(live)) if (!(Number(k) in next)) delete live[Number(k)];
+      Object.assign(live, next);
+    } catch { /* 轮询失败不打断页面 */ }
   }
 
   $effect(() => {
     load();
-    loadEnv();
-    return onWSMessage((topic, payload) => {
-      if (topic === 'events' && String((payload as { type?: string }).type ?? '').startsWith('proxy')) load();
-      if (topic === 'events' && String((payload as { type?: string }).type ?? '').startsWith('health')) load();
+    loadStatus();
+    // 编辑器或对话框打开时暂停轮询：数字跳动会打断填写
+    if (listenerOpen || siteOpen) return;
+    const timer = setInterval(loadStatus, 5000);
+    const off = onWSMessage((topic, payload) => {
+      if (topic !== 'events') return;
+      const t = String((payload as { type?: string }).type ?? '');
+      if (t.startsWith('proxy') || t.startsWith('health')) loadStatus();
     });
+    return () => { clearInterval(timer); off(); };
   });
 
-  const certBadge: Record<string, { label: string; cls: string }> = {
-    ok: { label: '证书正常', cls: 'bg-success/10 text-success ring-success/20' },
-    pending: { label: '申请中', cls: 'bg-info/10 text-info ring-info/20' },
-    error: { label: '证书异常', cls: 'bg-destructive/10 text-destructive ring-destructive/20' },
-    none: { label: '无 TLS', cls: 'bg-muted text-muted-foreground ring-border' },
-  };
+  const running = $derived(status?.running ?? false);
 
-  /* 新增/编辑域名 */
-  let createOpen = $state(false);
-  let editingId = $state<number | null>(null);
-  let dform = $state({ domain: '', tls_mode: 'auto' as ProxyDomain['tls_mode'], challenge: '' as ProxyDomain['challenge'], cert_pem: '', key_pem: '', remark: '', upstream: '', opts: { encode: true, security_headers: true, log_access: true } as CaddySiteOpts });
-  let submitting = $state(false);
-  let selfsigning = $state(false);
-  const dValid = $derived(
-    /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(dform.domain.trim()) ||
-      /^\d{1,3}(\.\d{1,3}){3}$/.test(dform.domain.trim()) ||
-      /^[0-9a-f:]+:[0-9a-f:]+$/i.test(dform.domain.trim()),
-  );
-  const isIPDomain = $derived(/^\d{1,3}(\.\d{1,3}){3}$/.test(dform.domain.trim()) || /^[0-9a-f]+:[0-9a-f:]+$/i.test(dform.domain.trim()));
-
-  function openCreate() {
-    editingId = null;
-    dform = { domain: '', tls_mode: 'auto', challenge: '', cert_pem: '', key_pem: '', remark: '', upstream: '', opts: { encode: true, security_headers: true, log_access: true } };
-    createOpen = true;
+  function liveOf(id: number) { return live[id]; }
+  function healthOf(id: number, url: string): boolean | undefined {
+    const ups = live[id]?.upstreams;
+    if (!ups) return undefined;
+    const u = ups.find((x) => x.url === url);
+    return u ? u.healthy : undefined;
   }
-
-  function openEdit(d: ProxyDomain) {
-    editingId = d.id;
-    dform = { domain: d.domain, tls_mode: d.tls_mode, challenge: d.challenge ?? '', cert_pem: '', key_pem: '', remark: d.remark, upstream: '', opts: parseOpts(d.caddy_opts) };
-    createOpen = true;
+  function sitesOf(l: WSListener): WSSite[] {
+    return items.filter((s) => s.listener_id === l.id);
   }
-
-  async function generateSelfSign() {
-    if (!dform.domain.trim() || selfsigning) return;
-    selfsigning = true;
-    try {
-      const r = await backend.selfSignCert(dform.domain.trim());
-      dform.tls_mode = 'manual';
-      dform.cert_pem = r.cert_pem;
-      dform.key_pem = r.key_pem;
-      toast.success(`自签证书已生成（至 ${r.expires}）`, { description: '浏览器首次访问需手动信任该证书' });
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      selfsigning = false;
+  function downCount(s: WSSite): number {
+    let n = 0;
+    for (const t of s.targets) {
+      const url = t.trim().split(/\s+/)[0];
+      if (healthOf(s.id, url) === false) n++;
     }
+    return n;
+  }
+  function parseTarget(t: string): { url: string; weight: number; backup: boolean } {
+    const parts = t.trim().split(/\s+/);
+    let weight = 1, backup = false;
+    for (const p of parts.slice(1)) {
+      if (p === 'backup') backup = true;
+      else if (p.startsWith('weight=')) weight = Math.max(1, parseInt(p.slice(7), 10) || 1);
+    }
+    return { url: parts[0] ?? '', weight, backup };
+  }
+  function summary(s: WSSite): string {
+    switch (s.type) {
+      case 'proxy': return s.targets.map((t) => parseTarget(t).url).join(' · ') || '—';
+      case 'redirect': return s.redirect_to;
+      case 'static': return s.root;
+      case 'text': return (s.text || '—').slice(0, 60);
+      case 'close': return '连接直接断开';
+    }
+    return '';
+  }
+  const typeLabels: Record<SiteType, string> = { proxy: '代理', redirect: '重定向', static: '静态', text: '文本', close: '断开' };
+  function listenerAddr(l: WSListener) {
+    const host = l.config.listen_ip || '0.0.0.0';
+    return (host.includes(':') ? `[${host}]` : host) + ':' + l.config.port;
+  }
+  function listenerError(l: WSListener): string {
+    const st = status?.listeners.find((x) => x.id === l.id);
+    return st?.error ?? '';
+  }
+  function listenerRunning(l: WSListener): boolean {
+    const st = status?.listeners.find((x) => x.id === l.id);
+    return st?.running ?? false;
   }
 
-  const valid = $derived(
-    dValid &&
-    (editingId !== null || /^https?:\/\//.test(dform.upstream.trim())) &&
-    (dform.tls_mode !== 'manual' || editingId !== null || (dform.cert_pem !== '' && dform.key_pem !== '')),
-  );
-  const dnsChallengeReady = $derived(!!dnsCfg?.provider);
+  /* ---------------- 监听器对话框 ---------------- */
+  let listenerOpen = $state(false);
+  let editingListenerId = $state<number | null>(null);
+  let lform = $state({ name: '', listen_ip: '', port: 443, tls: true, min_tls: '1.2', plain_http: '', http_port: 80, http_port_mode: 'serve', remark: '', enabled: true });
+  let copyListenerId = $state<number | null>(null);
 
-  async function submitDomain() {
-    if (!dValid || submitting) return;
-    submitting = true;
+  function openListener(l?: WSListener, copy = false) {
+    copyListenerId = copy && l ? l.id : null;
+    if (l && !copy) {
+      editingListenerId = l.id;
+      lform = { name: l.name, listen_ip: l.config.listen_ip, port: l.config.port, tls: l.config.tls, min_tls: l.config.min_tls || '1.2', plain_http: l.config.plain_http, http_port: l.config.http_port, http_port_mode: l.config.http_port_mode || (l.config.tls ? 'redirect' : 'serve'), remark: l.remark, enabled: l.enabled };
+    } else {
+      editingListenerId = null;
+      lform = { name: '', listen_ip: '', port: 8443, tls: true, min_tls: '1.2', plain_http: '', http_port: 8080, http_port_mode: 'redirect', remark: '', enabled: true };
+    }
+    listenerOpen = true;
+  }
+
+  async function saveListener() {
+    if (saving) return;
+    saving = true;
     try {
-      const payload: ProxyDomainInput & { domain: string } = {
-        domain: dform.domain.trim().toLowerCase(),
-        tls_mode: dform.tls_mode,
-        challenge: dform.tls_mode === 'auto' ? dform.challenge : '',
-        caddy_opts: dform.opts,
-        remark: dform.remark,
+      const payload: WSListenerInput = {
+        name: lform.name.trim(),
+        config: {
+          listen_ip: lform.listen_ip.trim(),
+          port: Number(lform.port) || 0,
+          tls: lform.tls,
+          min_tls: lform.tls ? lform.min_tls : '',
+          plain_http: lform.tls ? lform.plain_http : '',
+          http_port: Number(lform.http_port) || 0,
+          http_port_mode: Number(lform.http_port) > 0 ? lform.http_port_mode : '',
+        },
+        remark: lform.remark,
+        enabled: lform.enabled,
       };
-      if (editingId === null) {
-        payload.cert_pem = dform.cert_pem;
-        payload.key_pem = dform.key_pem;
-        const created = await backend.createProxyDomain(payload);
-        // 一步到位：首个上游自动落为 "/" 路由
-        if (dform.upstream.trim()) {
-          await backend.createProxyRoute(created.item.id, { path_match: '/', upstream_url: dform.upstream.trim() });
+      if (editingListenerId === null) {
+        const created = await backend.createWSListener(payload);
+        if (copyListenerId !== null) {
+          const srcListener = listeners.find((x) => x.id === copyListenerId);
+          if (srcListener) {
+            for (const s of sitesOf(srcListener)) {
+              const { id: _id, created_at: _c, cert_expires_at: _e, ...rest } = s;
+              await backend.createWSSite({ ...rest, listener_id: created.id, enabled: false, default: false } as WSSiteInput);
+            }
+            toast.success('监听与站点已复制（站点已停用，确认后启用）');
+          }
+        } else {
+          toast.success('监听已添加');
         }
       } else {
-        await backend.updateProxyDomain(editingId, payload);
+        await backend.updateWSListener(editingListenerId, payload);
+        toast.success('监听已保存');
       }
-      createOpen = false;
+      listenerOpen = false;
       await load();
-      toast.success(editingId === null ? '域名已添加，反代已热重载' : '域名已更新，反代已热重载');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      submitting = false;
+      saving = false;
     }
   }
 
-  /* DNS-01 凭据 */
-  let dnsOpen = $state(false);
-  let dnsForm = $state<DNSProviderConfig>({ provider: '', api_token: '', secret_key: '' });
-  let dnsSaving = $state(false);
-
-  function openDNS() {
-    dnsForm = { ...(dnsCfg ?? { provider: '', api_token: '', secret_key: '' }) };
-    dnsOpen = true;
-  }
-
-  async function saveDNS() {
-    if (dnsSaving) return;
-    dnsSaving = true;
+  async function toggleListener(l: WSListener, enabled: boolean) {
     try {
-      const r = await backend.setDNSConfig(dnsForm);
-      dnsCfg = r.config;
-      dnsOpen = false;
-      toast.success('DNS-01 凭据已保存', { description: '选择 DNS-01 挑战的域名将自动应用' });
+      await backend.setWSListenerEnabled(l.id, enabled);
+      await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      dnsSaving = false;
     }
   }
 
-  /* 寄生前置片段 */
-  let snippetOpen = $state(false);
-  let snippetKind = $state<'nginx' | 'caddy'>('nginx');
-  const snippetPort = $derived(env?.listen_http?.replace(/^.*:(\d+)$/, '$1') ?? '80');
+  async function removeListener(l: WSListener) {
+    if (confirmingDelete !== 'l' + l.id) {
+      confirmingDelete = 'l' + l.id;
+      setTimeout(() => { if (confirmingDelete === 'l' + l.id) confirmingDelete = ''; }, 3000);
+      return;
+    }
+    confirmingDelete = '';
+    try {
+      await backend.deleteWSListener(l.id);
+      await load();
+      toast.success('监听已删除');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
 
-  const nginxSnippet = $derived(`# Nginx（占用 80 的前置）— 加入对应 server {} 块
-# 把 ACME 挑战路径转发给 FirePanel（反代 HTTP 监听 ${env?.listen_http ?? ':8080'}）
-#
-# ✅ 不影响 Nginx 自身证书的签发与使用（仅多转发一个路径）
-# ⚠ certbot 冲突警示：若该 server 由 certbot --nginx 管理，它插入的
-#   location ^~ /.well-known/acme-challenge/ 优先级更高，会让面板的挑战请求
-#   落到 certbot 的目录（404）→ 面板签发失败。
-#   处理：两条 location 并存（certbot 答自己的、面板答自己的），或面板改用 DNS-01。
-location /.well-known/acme-challenge/ {
-    proxy_pass http://127.0.0.1:${snippetPort};
-    proxy_set_header Host $host;
-}`);
+  /* ---------------- 站点对话框 ---------------- */
+  let siteOpen = $state(false);
+  let editingSiteId = $state<number | null>(null);
+  let siteIsDefault = $state(false);
+  let siteListenerId = $state(0);
+  let siteTab = $state<'basic' | 'security' | 'traffic' | 'headers'>('basic');
+  let draft = $state<WSSite>(blankSite());
+  let domainsText = $state('');
+  let targetsText = $state('');
+  let locRows = $state<{ prefix: string; targets: string; strip: boolean }[]>([]);
+  let ipText = $state('');
+  let reqHText = $state('');
+  let resHText = $state('');
+  let copySiteId = $state<number | null>(null);
 
-  const caddySnippet = $derived(`# Caddyfile（占用 80 的前置 Caddy）— 在对应站点块内加入
-# ✅ 不影响 Caddy 自身证书的签发：Caddy 的内置 ACME 挑战应答优先于站点路由，
-#    它签发自己的证书时不会走到本转发块；面板签发时请求才会经此处转发。
-#    两者共存，互不干扰。
-handle_path /.well-known/acme-challenge/* {
-    reverse_proxy 127.0.0.1:${snippetPort}
-}`);
-
-  /* 引擎与监听切换 */
-  let engineForm = $state({ engine: 'builtin', http: '', https: '' });
-  let engineSaving = $state(false);
-
-  function primeEngineForm() {
-    if (!env) return;
-    engineForm = {
-      engine: env.engine,
-      http: env.listen_http?.replace(/^.*:/, '') ?? '80',
-      https: env.listen_https?.replace(/^.*:/, '') ?? '443',
+  function blankSite(): WSSite {
+    return {
+      id: 0, listener_id: 0, name: '', domains: [], type: 'proxy', enabled: true, default: false, remark: '',
+      tls_mode: 'auto', challenge: '', cert_pem: '', key_pem: '',
+      cert_status: 'pending', cert_error: '', cert_expires_at: null, created_at: '',
+      targets: [], lb_policy: '', health: { enable: false, mode: 'http', path: '/', interval: 30, timeout: 5, fails: 3, passes: 2 },
+      locations: [], use_target_host: false, forwarded_headers: true, insecure_skip_verify: false,
+      timeouts: { connect: 0, tls_handshake: 0, response_header: 0 },
+      redirect_to: '', redirect_code: 302, keep_path: true,
+      root: '', list_dir: false, text: '', content_type: 'text/plain; charset=utf-8', status_code: 200,
+      ip_mode: '', ip_list: [], compress: false, rate_limit: { enable: false, rate: 50, burst: 100, max_conns: 0 },
+      request_headers: [], response_headers: [],
     };
   }
 
-  async function saveEngine() {
-    if (engineSaving) return;
-    engineSaving = true;
-    try {
-      await backend.setProxyEngine({
-        engine: engineForm.engine,
-        http_addr: engineForm.http ? `:${engineForm.http.replace(/^:/, '')}` : '',
-        https_addr: engineForm.https ? `:${engineForm.https.replace(/^:/, '')}` : '',
-      });
-      toast.success('引擎与监听已切换并持久化', { description: '监听端口已按新配置重建；重启面板后保持' });
-      await loadEnv();
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      engineSaving = false;
+  function openSite(l: WSListener, s?: WSSite, copy = false, isDefault = false) {
+    copySiteId = copy && s ? s.id : null;
+    siteListenerId = s?.listener_id || l.id;
+    siteIsDefault = isDefault || (!!s?.default && !copy);
+    if (s && !copy) {
+      editingSiteId = s.id;
+      draft = { ...blankSite(), ...s, cert_pem: s.cert_pem ?? '', key_pem: s.key_pem ?? '' };
+    } else if (s && copy) {
+      editingSiteId = null;
+      draft = { ...blankSite(), ...s, id: 0, name: s.name ? s.name + ' - 副本' : '', default: false, enabled: false };
+    } else {
+      editingSiteId = null;
+      draft = blankSite();
     }
+    domainsText = draft.domains.join(', ');
+    targetsText = draft.targets.join('\n');
+    locRows = draft.locations.map((x) => ({ prefix: x.prefix, targets: x.targets.join('\n'), strip: x.strip_prefix }));
+    ipText = draft.ip_list.join('\n');
+    reqHText = draft.request_headers.join('\n');
+    resHText = draft.response_headers.join('\n');
+    siteTab = 'basic';
+    siteOpen = true;
   }
 
-  const engineDirty = $derived(
-    !!env && (engineForm.engine !== env.engine || `:${engineForm.http.replace(/^:/, '')}` !== env.listen_http.replace(/^.*:/, ':') || `:${engineForm.https.replace(/^:/, '')}` !== env.listen_https.replace(/^.*:/, ':')),
-  );
-
-  /* Caddy 一键安装 */
-  let caddyInstalling = $state(false);
-
-  /* Caddyfile：读取服务器真实文件，保存时只合并/追加并自动备份 */
-  let cfOpen = $state(false);
-  let cfTab = $state<'current' | 'generated'>('current');
-  let cfCurrent = $state(''); // 服务器上的实际内容（编辑器基线）
-  let cfGenerated = $state(''); // 面板生成预览（托管段）
-  let cfEdit = $state(''); // 编辑器内容
-  let cfPath = $state('/etc/caddy/Caddyfile');
-  let cfExists = $state(false);
-  let cfManaged = $state(false);
-  let cfLegacy = $state(false);
-  let cfHash = $state('');
-  let cfReadError = $state('');
-  let cfConflict = $state(false);
-  let cfLoading = $state(false);
-  let cfSaving = $state(false);
-  // 文件尚不存在时，编辑器里的草稿即为待创建内容，允许直接保存
-  const cfDirty = $derived(cfEdit !== cfCurrent || (!cfExists && cfEdit.trim() !== ''));
-
-  async function openCaddyfile() {
-    cfOpen = true;
-    await reloadCaddyfile();
-  }
-
-  async function reloadCaddyfile() {
-    cfLoading = true;
-    try {
-      const cf = await backend.caddyfile();
-      cfPath = cf.path;
-      cfExists = cf.exists;
-      cfManaged = cf.managed;
-      cfLegacy = cf.legacy;
-      cfHash = cf.hash;
-      cfReadError = cf.read_error ?? '';
-      cfGenerated = cf.generated;
-      // 文件存在就编辑真实内容；不存在才用待创建的托管段作草稿
-      cfCurrent = cf.exists ? cf.current : cf.generated;
-      cfEdit = cfCurrent;
-      cfTab = 'current';
-      cfConflict = false;
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      cfLoading = false;
-    }
-  }
-
-  async function saveCaddyfileEdit() {
-    if (!cfDirty || cfSaving) return;
-    cfSaving = true;
-    try {
-      const r = await backend.saveCaddyfile(cfEdit, cfHash);
-      cfCurrent = cfEdit;
-      cfHash = r.hash;
-      cfExists = true;
-      cfConflict = false;
-      toast.success('Caddyfile 已保存并重载', {
-        description: r.backup ? `原文件已备份到 ${r.backup}` : '语法校验通过，配置已生效',
-      });
-      await reloadCaddyfile();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        cfConflict = true;
-        toast.error('服务器文件已被修改，已取消保存', {
-          description: '为避免覆盖别处的改动，请先「重新读取」，再把你的修改合并进去',
-        });
-      } else {
-        toast.error(e instanceof Error ? e.message : String(e));
-      }
-    } finally {
-      cfSaving = false;
-    }
-  }
-
-  /** 把面板生成内容追加到文件末尾：保留现有内容，只做追加。 */
-  function appendGenerated() {
-    if (!cfGenerated) return;
-    if (cfManaged) {
-      toast.error('文件里已经有面板托管段，无需再追加', {
-        description: '在面板增删域名时，面板会自动替换托管段内的内容',
-      });
+  function openDefaultSite(l: WSListener) {
+    const s = sitesOf(l).find((x) => x.default);
+    if (s) {
+      openSite(l, s, false, true);
       return;
     }
-    const base = cfEdit.replace(/\s+$/, '');
-    cfEdit = `${base ? `${base}\n\n` : ''}${cfGenerated}`;
-    cfTab = 'current';
-    toast.success('已追加到编辑区末尾', { description: '现有内容原样保留；保存前请确认站点地址没有重复' });
+    editingSiteId = null;
+    siteIsDefault = true;
+    siteListenerId = l.id;
+    draft = blankSite();
+    domainsText = '';
+    targetsText = 'http://127.0.0.1:80';
+    locRows = [];
+    ipText = reqHText = resHText = '';
+    siteTab = 'basic';
+    siteOpen = true;
   }
 
-  function downloadCaddyfile() {
-    const blob = new Blob([cfEdit], { type: 'text/plain' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'Caddyfile';
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
+  const domains = $derived(domainsText.split(/[\s,，]+/).map((d) => d.trim()).filter(Boolean));
 
-  /* 域名 Caddy 站点选项 */
-  function parseOpts(raw: string | undefined): { encode: boolean; security_headers: boolean; log_access: boolean } {
-    const def = { encode: true, security_headers: true, log_access: true };
-    if (raw) {
-      try {
-        return { ...def, ...JSON.parse(raw) };
-      } catch { /* fallthrough */ }
+  const formValid = $derived.by(() => {
+    if (!siteIsDefault && domains.length === 0) return false;
+    switch (draft.type) {
+      case 'proxy':
+        return targetsText.split('\n').some((t) => /^https?:\/\/.+/.test(t.trim()));
+      case 'redirect':
+        return draft.redirect_to.trim() !== '' && (draft.redirect_to.includes('://') || draft.redirect_to.includes('{host}'));
+      case 'static':
+        return draft.root.trim() !== '';
+      default:
+        return true;
     }
-    return def;
+  });
+
+  function buildPayload(): WSSiteInput {
+    const targets = targetsText.split('\n').map((t) => t.trim()).filter(Boolean);
+    const locations = locRows
+      .filter((l) => l.prefix.trim().startsWith('/') && l.targets.trim() !== '')
+      .map((l) => ({
+        prefix: l.prefix.trim(),
+        targets: l.targets.split('\n').map((t) => t.trim()).filter(Boolean),
+        strip_prefix: l.strip,
+        request_headers: [] as string[],
+      }));
+    return {
+      name: draft.name.trim(),
+      domains: siteIsDefault ? (domains.length ? domains : ['*']) : domains,
+      type: draft.type,
+      enabled: draft.enabled,
+      default: siteIsDefault,
+      remark: draft.remark,
+      listener_id: siteListenerId,
+      tls_mode: draft.tls_mode,
+      challenge: draft.challenge,
+      cert_pem: draft.cert_pem,
+      key_pem: draft.key_pem,
+      targets: draft.type === 'proxy' ? targets : [],
+      lb_policy: draft.lb_policy,
+      health: { ...draft.health },
+      locations: draft.type === 'proxy' ? locations : [],
+      use_target_host: draft.use_target_host,
+      forwarded_headers: draft.forwarded_headers,
+      insecure_skip_verify: draft.insecure_skip_verify,
+      timeouts: draft.timeouts,
+      redirect_to: draft.redirect_to.trim(),
+      redirect_code: Number(draft.redirect_code) || 302,
+      keep_path: draft.keep_path,
+      root: draft.root.trim(),
+      list_dir: draft.list_dir,
+      text: draft.text,
+      content_type: draft.content_type,
+      status_code: Number(draft.status_code) || 200,
+      ip_mode: draft.ip_mode,
+      ip_list: ipText.split('\n').map((x) => x.trim()).filter(Boolean),
+      compress: draft.compress,
+      rate_limit: { ...draft.rate_limit },
+      request_headers: reqHText.split('\n').map((x) => x.trim()).filter(Boolean),
+      response_headers: resHText.split('\n').map((x) => x.trim()).filter(Boolean),
+    };
   }
 
-  async function installCaddy() {
-    if (caddyInstalling) return;
-    caddyInstalling = true;
+  async function saveSite() {
+    if (!formValid || saving) return;
+    saving = true;
     try {
-      const r = await backend.installCaddy();
-      toast.success(`Caddy ${r.version} 安装完成`, { description: '现在可以把引擎切换为 Caddy 托管了' });
-      await loadEnv();
-      primeEngineForm();
+      const payload = buildPayload();
+      if (editingSiteId === null) {
+        await backend.createWSSite(payload);
+        toast.success(copySiteId !== null ? '站点已复制（已停用，确认后启用）' : '站点已添加');
+      } else {
+        await backend.updateWSSite(editingSiteId, payload);
+        toast.success('站点已保存');
+      }
+      siteOpen = false;
+      await load();
+      loadStatus();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      caddyInstalling = false;
+      saving = false;
     }
   }
 
-  async function toggleDomain(d: ProxyDomain, enabled: boolean) {
+  async function toggleSite(s: WSSite, enabled: boolean) {
     try {
-      await backend.updateProxyDomain(d.id, { enabled });
+      await backend.setWSSiteEnabled(s.id, enabled);
       await load();
-      toast[enabled ? 'success' : 'info'](`域名 ${d.domain} 已${enabled ? '启用' : '停用'}`);
+      loadStatus();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function removeDomain(d: ProxyDomain) {
+  async function removeSite(s: WSSite) {
+    if (confirmingDelete !== 's' + s.id) {
+      confirmingDelete = 's' + s.id;
+      setTimeout(() => { if (confirmingDelete === 's' + s.id) confirmingDelete = ''; }, 3000);
+      return;
+    }
+    confirmingDelete = '';
     try {
-      await backend.deleteProxyDomain(d.id);
+      await backend.deleteWSSite(s.id);
       await load();
-      toast.success(`域名 ${d.domain} 已删除`);
+      loadStatus();
+      toast.success('站点已删除');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
-  /* 新增路由 */
-  let routeOpen = $state(false);
-  let routeDomain = $state<ProxyDomain | null>(null);
-  let rform = $state({ path_match: '/', upstream_url: 'http://', health_path: '', ws_enabled: true });
-  let rSubmitting = $state(false);
-
-  function openRoute(d: ProxyDomain) {
-    routeDomain = d;
-    rform = { path_match: '/', upstream_url: 'http://', health_path: '', ws_enabled: true };
-    routeOpen = true;
-  }
-
-  async function submitRoute() {
-    if (!routeDomain || !rform.upstream_url.startsWith('http') || rSubmitting) return;
-    rSubmitting = true;
+  async function resetDefaultSite(l: WSListener) {
+    const s = sitesOf(l).find((x) => x.default);
+    if (!s) return;
     try {
-      await backend.createProxyRoute(routeDomain.id, rform);
-      routeOpen = false;
+      await backend.deleteWSSite(s.id);
       await load();
-      toast.success('路由已添加');
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      rSubmitting = false;
-    }
-  }
-
-  async function removeRoute(r: ProxyRoute) {
-    try {
-      await backend.deleteProxyRoute(r.id);
-      await load();
-      toast.success('路由已删除');
+      toast.success('默认站点已重置');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
-  const healthDot: Record<string, string> = {
-    ok: 'bg-success',
-    down: 'bg-destructive',
-    unknown: 'bg-muted-foreground/40',
-  };
+  /* 域名链接：点击打开新页，工具提示复制完整地址 */
+  function domainLink(l: WSListener, domain: string): { href: string; text: string } | null {
+    if (domain.includes('*') || domain === '*') return null;
+    const scheme = l.config.tls ? 'https' : 'http';
+    const port = l.config.tls ? (l.config.port === 443 ? '' : ':' + l.config.port) : l.config.port === 80 ? '' : ':' + l.config.port;
+    return { href: `${scheme}://${domain}${port}`, text: `${scheme}://${domain}${port}` };
+  }
 
-  // 剪贴板在 http 明文页面（非安全上下文）不可用：给出明确提示而不是静默失败
   async function copyText(text: string) {
     try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('当前浏览器环境不支持剪贴板（需 HTTPS 或 localhost），请手动选择复制');
-      }
       await navigator.clipboard.writeText(text);
-      toast.success('已复制到剪贴板');
-    } catch (e) {
-      toast.error(e instanceof Error ? `复制失败: ${e.message}` : '复制失败');
+      toast.success('已复制');
+    } catch {
+      toast.error('复制失败');
     }
   }
 
+  function setCollapsed(l: WSListener) {
+    const next = new Set(collapsedListeners);
+    if (next.has(String(l.id))) next.delete(String(l.id)); else next.add(String(l.id));
+    collapsedListeners = next;
+  }
+
+  const filteredSitesOf = (l: WSListener) => {
+    const q = filterText.trim().toLowerCase();
+    let list = sitesOf(l);
+    if (q) {
+      list = list.filter((s) =>
+        (s.name || '').toLowerCase().includes(q) ||
+        s.domains.some((d) => d.toLowerCase().includes(q)) ||
+        s.targets.some((t) => t.toLowerCase().includes(q)),
+      );
+    }
+    return list;
+  };
 </script>
 
 <div class="animate-fade-up space-y-4">
-  <div class="flex flex-wrap items-center gap-2.5">
+  <!-- 页头动作 -->
+  <div class="flex flex-wrap items-center gap-2">
     <Badge variant="outline" class="gap-1.5 {running ? 'bg-success/10 text-success ring-success/20' : 'bg-muted text-muted-foreground'}">
-      <Radio size={12} />
-      {running ? '反代运行中' : '尚无域名，未启动监听'}
+      <Server size={12} />
+      {running ? `${status?.listeners.filter((x) => x.running).length ?? 0}/${status?.listeners.length ?? 0} 监听运行中` : '未运行'}
     </Badge>
     <span class="ml-auto"></span>
-    {#if env?.engine === 'caddy'}
-      <Button variant="outline" onclick={openCaddyfile} title="读取并编辑服务器上的 Caddyfile；保存前自动备份，只合并托管段或追加，不会整盘覆盖">
-        <FileCode2 size={14} />
-        Caddyfile
+    <Button variant="outline" size="sm" class="h-8 gap-1.5" onclick={() => (location.hash = '#/proxy/topology')}>
+      <Workflow size={14} /> 网络拓扑
+    </Button>
+    {#if listeners.length}
+      <Button variant="outline" size="sm" class="h-8 gap-1.5" onclick={() => {
+        const all = listeners.every((l) => collapsedListeners.has(String(l.id)));
+        collapsedListeners = new Set(all ? [] : listeners.map((l) => String(l.id)));
+      }}>
+        {#if listeners.every((l) => collapsedListeners.has(String(l.id)))}<ChevronsUpDown size={14} />{:else}<ChevronsDownUp size={14} />{/if}
+        {listeners.every((l) => collapsedListeners.has(String(l.id))) ? '全部展开' : '全部折叠'}
       </Button>
     {/if}
-    <Button variant="outline" onclick={() => (dnsOpen = true)}>
-      <KeyRound size={14} />
-      DNS-01 凭据{dnsCfg?.provider ? ` · ${dnsCfg.provider}` : ''}
-    </Button>
-    <Button variant="outline" onclick={() => { envOpen = true; loadEnv().then(primeEngineForm); }}>
-      <ScanSearch size={14} />
-      环境探测
-    </Button>
-    <Button onclick={openCreate}>
-      <Plus size={16} />
-      添加域名
+    {#if items.length}
+      <div class="relative">
+        <Search size={13} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input class="h-8 w-52 pl-8 text-[12.5px]" placeholder="搜索站点…" bind:value={filterText} />
+      </div>
+    {/if}
+    <label class="flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1.5 text-[12px] text-muted-foreground">
+      <Switch class="scale-90" checked={compact} onCheckedChange={(v) => (compact = v)} />
+      紧凑
+    </label>
+    <Button size="sm" class="h-8 gap-1.5" onclick={() => openListener()}>
+      <Plus size={14} /> 添加监听
     </Button>
   </div>
 
@@ -467,594 +492,532 @@ handle_path /.well-known/acme-challenge/* {
         <div class="h-40 animate-pulse rounded-xl bg-foreground/[0.04]"></div>
       {/each}
     </div>
-  {:else if items.length === 0}
-    <EmptyState title="还没有反向代理">
-      {#snippet icon()}<Globe size={22} />{/snippet}
+  {:else if listeners.length === 0}
+    <EmptyState title="添加第一个监听">
+      {#snippet icon()}<Server size={22} />{/snippet}
+      desc="监听一个端口（HTTP 或 HTTPS），站点挂在监听下，按域名路由。" 
       {#snippet action()}
-        <Button onclick={() => (createOpen = true)}><Plus size={16} /> 添加反向代理</Button>
+        <Button onclick={() => openListener()}><Plus size={16} /> 添加监听</Button>
       {/snippet}
     </EmptyState>
   {:else}
     <div class="space-y-4">
-      {#each items as d (d.id)}
-        <Card class="overflow-hidden shadow-soft">
-          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border/60 px-5 py-3.5">
-            <Globe size={16} class="text-primary" />
+      {#each listeners as l (l.id)}
+        {@const sites = filteredSitesOf(l)}
+        {@const lRunning = listenerRunning(l)}
+        {@const lError = listenerError(l)}
+        <Card class="lift-card overflow-hidden {l.enabled ? '' : 'opacity-70'}">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border/60 px-5 py-3.5">
+            <Switch checked={l.enabled} onCheckedChange={(v) => toggleListener(l, v)} />
             <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="text-[14px] font-semibold">{d.domain}</span>
-                <a
-                  href="{d.tls_mode === 'none' ? 'http://' : 'https://'}{d.domain}"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-muted-foreground/60 transition-colors hover:text-primary"
-                  title="在新标签页打开"
-                  onclick={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink size={12} />
-                </a>
-                <Badge variant="outline" class="text-[10px] ring-inset {certBadge[d.cert_status]?.cls}">
-                  {certBadge[d.cert_status]?.label}
-                </Badge>
-                {#if d.tls_mode === 'auto'}
-                  <Badge variant="outline" class="bg-primary/5 text-[10px] text-primary ring-primary/20">Let's Encrypt</Badge>
-                {:else if d.tls_mode === 'manual'}
-                  <Badge variant="outline" class="bg-info/5 text-[10px] text-info ring-info/20">手动证书</Badge>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-[14.5px] font-semibold tracking-tight">{l.name || '未命名监听'}</span>
+                <Badge variant="outline" class="h-[19px] font-mono text-[10.5px]">{l.config.tls ? 'https' : 'http'}://{listenerAddr(l)}</Badge>
+                {#if l.config.tls && l.config.plain_http === 'redirect'}
+                  <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">明文跳转 HTTPS</Badge>
+                {:else if l.config.tls && l.config.plain_http === 'serve'}
+                  <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">明文直接提供</Badge>
+                {/if}
+                {#if l.config.http_port}
+                  <Badge variant="outline" class="h-[19px] font-mono text-[10.5px] text-muted-foreground" title="额外明文端口">
+                    http:{l.config.http_port} {l.config.tls && l.config.http_port_mode === 'redirect' ? '跳转' : '提供'}
+                  </Badge>
+                {/if}
+                {#if l.enabled && !lRunning && lError}
+                  <Badge variant="outline" class="h-[19px] border-destructive/40 bg-destructive/[0.06] text-[10.5px] text-destructive">启动失败</Badge>
                 {/if}
               </div>
-              {#if d.cert_error}
-                <p class="mt-0.5 truncate text-[11px] text-destructive" title={d.cert_error}>{d.cert_error}</p>
-              {:else if d.remark}
-                <p class="mt-0.5 truncate text-[11.5px] text-muted-foreground">{d.remark}</p>
+              {#if l.remark}
+                <div class="mt-0.5 text-[11.5px] text-muted-foreground">{l.remark}</div>
+              {/if}
+              {#if l.enabled && !lRunning && lError}
+                <div class="mt-0.5 font-mono text-[11px] text-destructive">{lError}</div>
               {/if}
             </div>
-            <div class="ml-auto flex items-center gap-3">
-              <Switch checked={d.enabled} onCheckedChange={(v) => toggleDomain(d, v)} />
-              <Button variant="outline" size="sm" onclick={() => openRoute(d)}><Plus size={14} /> 路由</Button>
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger>
-                  {#snippet child({ props })}
-                    <Button {...props} variant="ghost" size="icon" class="size-8 text-muted-foreground"><MoreHorizontal size={16} /></Button>
-                  {/snippet}
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Content align="end" class="w-36">
-                  <DropdownMenu.Item onclick={() => openEdit(d)}>
-                    <Pencil size={14} /> 编辑域名
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator />
-                  <DropdownMenu.Item variant="destructive" onclick={() => removeDomain(d)}>
-                    <Trash2 size={14} /> 删除域名
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Root>
+            <div class="ml-auto flex items-center gap-2">
+              <span class="font-num text-[11.5px] text-muted-foreground">{sitesOf(l).length} 站点</span>
+              <button type="button" class="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground" onclick={() => setCollapsed(l)} aria-label="折叠">
+                {#if collapsedListeners.has(String(l.id))}<ChevronsUpDown size={14} />{:else}<ChevronsDownUp size={14} />{/if}
+              </button>
             </div>
           </div>
 
-          {#if d.routes.length === 0}
-            <div class="px-5 py-6">
-              <EmptyState compact title="暂无路由">
-                {#snippet icon()}<Server size={18} />{/snippet}
-                {#snippet action()}
-                  <Button variant="outline" size="sm" onclick={() => openRoute(d)}><Plus size={14} /> 添加路由</Button>
-                {/snippet}
-              </EmptyState>
+          {#if !collapsedListeners.has(String(l.id))}
+            <div class={compact ? '' : 'divide-y divide-border/40'}>
+              {#each sites as s (s.id)}
+                {@const lv = liveOf(s.id)}
+                {@const downs = downCount(s)}
+                <div class="group transition-colors hover:bg-foreground/[0.02] {s.enabled ? '' : 'opacity-60'}">
+                  {#if compact}
+                    <div class="flex items-center gap-2.5 px-5 py-1.5">
+                      <Switch class="scale-90" checked={s.enabled} onCheckedChange={(v) => toggleSite(s, v)} />
+                      <span class="truncate font-mono text-[12.5px]">{s.default ? '默认站点' : s.domains[0]}</span>
+                      <span class="truncate font-mono text-[11.5px] text-muted-foreground">{summary(s)}</span>
+                      {#if lv}
+                        <span class="ml-auto whitespace-nowrap font-num text-[11.5px] tabular-nums text-muted-foreground">
+                          {fmtCompact(lv.requests)}{lv.active > 0 ? ` · ${lv.active}` : ''}
+                        </span>
+                      {/if}
+                      {@render SiteMenu(s, l, () => openSite(l, s), () => openSite(l, s, true), () => removeSite(s), () => resetDefaultSite(l))}
+                    </div>
+                  {:else}
+                    <div class="grid grid-cols-[auto_minmax(0,1.25fr)_minmax(0,1.15fr)_auto_auto_auto] items-center gap-3 px-5 py-2.5">
+                      <Switch checked={s.enabled} onCheckedChange={(v) => toggleSite(s, v)} />
+                      <div class="min-w-0">
+                        {#if s.default}
+                          <div class="flex items-center gap-2">
+                            <Badge variant="outline" class="h-[19px] border-warning/40 bg-warning/[0.06] text-[10.5px] text-warning">默认</Badge>
+                            <span class="text-[11.5px] text-muted-foreground">未匹配任何站点域名的请求</span>
+                          </div>
+                        {:else}
+                          <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[12.5px]">
+                            {#each s.domains.slice(0, 3) as d, i (d)}
+                              {@const link = domainLink(l, d)}
+                              {#if i > 0}<span class="text-muted-foreground/40">·</span>{/if}
+                              {#if link}
+                                <Tooltip.Root>
+                                  <Tooltip.Trigger
+                                    class="inline-flex max-w-[220px] cursor-pointer items-center gap-1 truncate hover:text-primary"
+                                    onclick={(e) => { e.preventDefault(); window.open(link.href, '_blank'); }}
+                                  >
+                                    <span class="truncate">{d}</span><ExternalLink size={10} class="opacity-0 transition-opacity group-hover:opacity-100" />
+                                  </Tooltip.Trigger>
+                                  <Tooltip.Content class="flex items-center gap-2">
+                                    <span class="font-mono text-[11px]">{link.text}</span>
+                                    <button type="button" class="text-primary hover:underline" onclick={(e) => { e.stopPropagation(); copyText(link.text); }}>复制</button>
+                                  </Tooltip.Content>
+                                </Tooltip.Root>
+                              {:else}
+                                <span class="text-muted-foreground">{d}</span>
+                              {/if}
+                            {/each}
+                            {#if s.domains.length > 3}
+                              <span class="text-[11px] text-muted-foreground/70">+{s.domains.length - 3}</span>
+                            {/if}
+                          </div>
+                        {/if}
+                        {#if s.name}
+                          <div class="mt-0.5 text-[11.5px] text-muted-foreground">{s.name}</div>
+                        {/if}
+                      </div>
+                      <div class="flex min-w-0 items-center gap-2">
+                        <Badge variant="outline" class="h-[19px] shrink-0 text-[10.5px]">{typeLabels[s.type]}</Badge>
+                        <span class="truncate font-mono text-[11.5px] text-muted-foreground">{summary(s)}</span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        {#if !s.enabled}
+                          <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">已停用</Badge>
+                        {/if}
+                        {#if s.locations.length}
+                          <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">分路径 {s.locations.length}</Badge>
+                        {/if}
+                        {#if s.ip_mode}
+                          <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">{s.ip_mode === 'whitelist' ? '白名单' : '黑名单'}</Badge>
+                        {/if}
+                        {#if s.rate_limit.enable}
+                          <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">限流</Badge>
+                        {/if}
+                        {#if s.insecure_skip_verify}
+                          <Badge variant="outline" class="h-[19px] text-[10.5px] text-muted-foreground">跳过校验</Badge>
+                        {/if}
+                        {#if s.type === 'proxy' && downs > 0}
+                          <Badge variant="outline" class="h-[19px] border-destructive/40 bg-destructive/[0.06] text-[10.5px] text-destructive">{downs} 后端不可用</Badge>
+                        {/if}
+                      </div>
+                      <div class="font-num whitespace-nowrap text-right text-[11.5px] tabular-nums text-muted-foreground" title="请求数 · 后端错误 · 活跃">
+                        {#if lv}
+                          {fmtCompact(lv.requests)}{#if lv.errors > 0}<span class="text-destructive"> · {fmtCompact(lv.errors)}</span>{/if}{#if lv.active > 0}<span> · {lv.active} 活跃</span>{/if}
+                        {:else}
+                          —
+                        {/if}
+                      </div>
+                      {@render SiteMenu(s, l, () => openSite(l, s), () => openSite(l, s, true), () => removeSite(s), () => resetDefaultSite(l))}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+              {#if sites.length === 0}
+                <div class="px-5 py-3 text-[12px] text-muted-foreground">{filterText ? '没有匹配的站点' : '暂无站点'}</div>
+              {/if}
             </div>
           {:else}
-            <table class="w-full text-left text-[13px]">
-              <thead>
-                <tr class="border-b border-border/40 text-[11px] text-muted-foreground">
-                  <th class="px-5 py-2 font-medium">路径</th>
-                  <th class="px-3 py-2 font-medium">上游</th>
-                  <th class="px-3 py-2 font-medium">WebSocket</th>
-                  <th class="px-3 py-2 font-medium">健康</th>
-                  <th class="px-5 py-2 text-right font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each d.routes as r (r.id)}
-                  <tr class="group border-b border-border/30 last:border-0 hover:bg-foreground/[0.02]">
-                    <td class="px-5 py-2.5 font-mono text-[12px] font-medium">{r.path_match}</td>
-                    <td class="px-3 py-2.5 font-mono text-[12px]">{r.upstream_url}</td>
-                    <td class="px-3 py-2.5">
-                      {#if r.ws_enabled}
-                        <Badge variant="outline" class="bg-success/5 text-[10px] text-success ring-success/20">支持</Badge>
-                      {:else}
-                        <span class="text-muted-foreground/60 text-[11px]">—</span>
-                      {/if}
-                    </td>
-                    <td class="px-3 py-2.5">
-                      <span class="inline-flex items-center gap-1.5 text-[11.5px]">
-                        <span class="h-[7px] w-[7px] rounded-full {healthDot[r.health_status]}"></span>
-                        {r.health_status === 'ok' ? '健康' : r.health_status === 'down' ? '不可达' : '未检测'}
-                        {#if r.health_checked_at}
-                          <span class="text-muted-foreground/70">{fmtDateTime(r.health_checked_at)}</span>
-                        {/if}
-                      </span>
-                    </td>
-                    <td class="px-5 py-2.5 text-right">
-                      <Button
-                        variant="ghost" size="icon"
-                        class="size-7 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                        onclick={() => removeRoute(r)} aria-label="删除路由"
-                      >
-                        <Trash2 size={13} />
-                      </Button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+            <div class="px-5 py-2 text-[12px] text-muted-foreground">已折叠 {sitesOf(l).length} 个站点</div>
           {/if}
+
+          <div class="flex items-center gap-1 border-t border-border/60 px-3.5 py-2">
+            <Button variant="ghost" size="sm" class="h-7 gap-1 text-[12px] text-primary" onclick={() => openSite(l)}>
+              <Plus size={13} /> 添加站点
+            </Button>
+            {#if !sitesOf(l).some((x) => x.default)}
+              <Button variant="ghost" size="sm" class="h-7 gap-1 text-[12px]" onclick={() => openDefaultSite(l)}>
+                <ShieldCheck size={13} /> 设置默认站点
+              </Button>
+            {/if}
+            <span class="ml-auto"></span>
+            <Button variant="ghost" size="sm" class="h-7 gap-1 text-[12px]" onclick={() => openListener(l)}><Pencil size={13} /> 编辑监听</Button>
+            <Button variant="ghost" size="sm" class="h-7 gap-1 text-[12px]" onclick={() => openListener(l, true)}><CopyPlus size={13} /> 复制</Button>
+            <Button variant="ghost" size="sm" class="h-7 gap-1 text-[12px] text-destructive hover:text-destructive" onclick={() => removeListener(l)}>
+              {#if confirmingDelete === 'l' + l.id}<ShieldAlert size={13} /> 确认删除{:else}<Trash2 size={13} /> 删除{/if}
+            </Button>
+          </div>
         </Card>
       {/each}
     </div>
   {/if}
 </div>
 
-<!-- 添加/编辑域名（一步向导：域名 + 上游即可用，高级项折叠） -->
-<Dialog.Root bind:open={createOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>{editingId === null ? '添加反向代理' : '编辑域名'}</Dialog.Title>
-      {#if editingId !== null}
-        <Dialog.Description>路由转发在域名卡片中管理。</Dialog.Description>
-      {/if}
-    </Dialog.Header>
-    <div class="grid gap-3.5">
-      <div class="grid gap-2">
-        <Label for="pd-domain">① 访问域名</Label>
-        <Input id="pd-domain" placeholder="app.example.com 或 203.0.113.9" bind:value={dform.domain} class="font-mono" />
-        {#if isIPDomain && editingId === null}
-          <p class="text-[11px] text-info">检测到 IP：将签发 Let's Encrypt 6.7 天短期证书（自动续期）；内网 IP 请在高级里选手动证书。</p>
-        {/if}
-      </div>
-      {#if editingId === null}
-        <div class="grid gap-2">
-          <Label for="pd-upstream">② 服务地址</Label>
-          <Input id="pd-upstream" placeholder="http://127.0.0.1:8080" bind:value={dform.upstream} class="font-mono" title="自动创建 / 路由；更多路径稍后可在域名卡片中添加" />
-        </div>
-      {/if}
-      <label class="flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2.5 text-[13px]">
-        <Switch
-          checked={dform.tls_mode !== 'none'}
-          onCheckedChange={(v) => (dform.tls_mode = v ? 'auto' : 'none')}
-        />
-        <span class="font-medium">HTTPS 自动证书</span>
-        <span class="text-[11px] text-muted-foreground">Let's Encrypt 自动签发与续期</span>
-      </label>
+{#if listeners.length === 0 && !loading}
+  <div class="rounded-xl border border-dashed border-border/70 bg-card/50 px-6 py-4 text-[12.5px] leading-relaxed text-muted-foreground">
+    推荐配置：监听 443（HTTPS）+ 额外 HTTP 端口 80（跳转 HTTPS）。站点填域名与后端即可，证书自动签发。
+  </div>
+{/if}
 
-      <details open={editingId !== null} class="rounded-lg border border-border/60">
-        <summary class="cursor-pointer select-none px-3 py-2 text-[12px] font-medium text-muted-foreground hover:text-foreground">
-          高级选项{editingId !== null ? '（含手动证书）' : ''}
-        </summary>
-        <div class="grid gap-3.5 border-t border-border/50 p-3.5">
-          <div class="grid gap-2">
-            <Label>TLS 模式</Label>
-            <Select.Root type="single" bind:value={dform.tls_mode}>
-              <Select.Trigger class="w-full">
-                {dform.tls_mode === 'auto' ? "自动（Let's Encrypt，域名 90 天 / IP 6.7 天）" : dform.tls_mode === 'manual' ? '手动证书' : '无 TLS（仅 HTTP）'}
-              </Select.Trigger>
-              <Select.Content>
-                <Select.Item value="auto">自动（Let's Encrypt）</Select.Item>
-                <Select.Item value="manual">手动证书</Select.Item>
-                <Select.Item value="none">无 TLS（仅 HTTP）</Select.Item>
-              </Select.Content>
-            </Select.Root>
-          </div>
-          {#if dform.tls_mode === 'auto'}
-            <div class="grid gap-2">
-              <Label>ACME 挑战方式</Label>
-              <Select.Root type="single" bind:value={dform.challenge}>
-                <Select.Trigger class="w-full">
-                  {dform.challenge === '' || dform.challenge === 'auto'
-                    ? '自动（按端口探测结果选择）'
-                    : dform.challenge === 'http' ? '仅 HTTP-01（80 端口校验）'
-                    : dform.challenge === 'alpn' ? '仅 TLS-ALPN-01（443 端口校验）'
-                    : 'DNS-01（无需 80/443，泛域名必选）'}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="auto">自动（按端口探测结果选择）</Select.Item>
-                  <Select.Item value="http">仅 HTTP-01（80 端口校验）</Select.Item>
-                  <Select.Item value="alpn">仅 TLS-ALPN-01（443 端口校验）</Select.Item>
-                  <Select.Item value="dns">DNS-01（无需 80/443，泛域名必选）</Select.Item>
-                </Select.Content>
-              </Select.Root>
-              {#if dform.challenge === 'dns'}
-                {#if dnsChallengeReady}
-                  <p class="text-[11px] text-success">DNS-01 凭据已配置（{dnsCfg?.provider}），保存后自动生效。</p>
-                {:else}
-                  <p class="text-[11px] text-warning">尚未配置 DNS-01 凭据：
-                    <button type="button" class="underline hover:text-foreground" onclick={openDNS}>立即配置</button>
-                  </p>
-                {/if}
-              {:else if env && !env.http.bindable && !env.https.bindable && dform.challenge === ''}
-                <p class="text-[11px] text-warning">探测到 80/443 均被占用：自动挑战可能失败，建议选 DNS-01，或用「环境探测」生成寄生前置配置。</p>
-              {/if}
-            </div>
-          {/if}
-          {#if dform.tls_mode === 'manual' && editingId === null}
-            <Button variant="outline" size="sm" class="justify-start" disabled={selfsigning || !dform.domain.trim()} onclick={generateSelfSign}>
-              {selfsigning ? '生成中…' : '为该域名/IP 自动生成自签证书（10 年）'}
-            </Button>
-            <div class="grid gap-2">
-              <Label for="pd-cert">证书 PEM</Label>
-              <textarea id="pd-cert" class="h-24 w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[11px] outline-none focus:ring-2 focus:ring-ring/40" placeholder="-----BEGIN CERTIFICATE-----" bind:value={dform.cert_pem}></textarea>
-            </div>
-            <div class="grid gap-2">
-              <Label for="pd-key">私钥 PEM</Label>
-              <textarea id="pd-key" class="h-24 w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[11px] outline-none focus:ring-2 focus:ring-ring/40" placeholder="-----BEGIN PRIVATE KEY-----" bind:value={dform.key_pem}></textarea>
-            </div>
-          {/if}
-          <div class="grid gap-2">
-            <Label>Caddy 站点选项 <span class="text-muted-foreground/70">（Caddy 引擎下生效）</span></Label>
-            <div class="grid gap-1.5 sm:grid-cols-3">
-              <label class="flex items-center gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[12px]">
-                <Switch checked={dform.opts.encode} onCheckedChange={(v) => (dform.opts = { ...dform.opts, encode: v })} />
-                压缩
-              </label>
-              <label class="flex items-center gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[12px]">
-                <Switch checked={dform.opts.security_headers} onCheckedChange={(v) => (dform.opts = { ...dform.opts, security_headers: v })} />
-                安全头
-              </label>
-              <label class="flex items-center gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[12px]">
-                <Switch checked={dform.opts.log_access} onCheckedChange={(v) => (dform.opts = { ...dform.opts, log_access: v })} />
-                访问日志
-              </label>
-            </div>
-          </div>
-          <div class="grid gap-2">
-            <Label for="pd-remark">备注</Label>
-            <Input id="pd-remark" placeholder="用途说明" bind:value={dform.remark} />
-          </div>
-        </div>
-      </details>
-    </div>
-    <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => (createOpen = false)}>取消</Button>
-      <Button disabled={!valid || submitting} onclick={submitDomain}>
-        {submitting ? '保存中…' : editingId === null ? '创建并生效' : '保存'}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- 添加路由 -->
-<Dialog.Root bind:open={routeOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>添加路由{routeDomain ? ` · ${routeDomain.domain}` : ''}</Dialog.Title>
-      <Dialog.Description>按最长路径前缀匹配。</Dialog.Description>
-    </Dialog.Header>
-    <div class="grid gap-3.5">
-      <div class="grid grid-cols-2 gap-3">
-        <div class="grid gap-2">
-          <Label for="pr-path">路径前缀</Label>
-          <Input id="pr-path" placeholder="/ 或 /api" bind:value={rform.path_match} class="font-mono" />
-        </div>
-        <div class="grid gap-2">
-          <Label for="pr-health">健康检查路径</Label>
-          <Input id="pr-health" placeholder="/healthz" bind:value={rform.health_path} class="font-mono" />
-        </div>
-      </div>
-      <div class="grid gap-2">
-        <Label for="pr-up">上游地址</Label>
-        <Input id="pr-up" placeholder="http://192.168.1.100:8080" bind:value={rform.upstream_url} class="font-mono" />
-      </div>
-      <label class="flex items-center gap-2.5 text-[13px]">
-        <Switch checked={rform.ws_enabled} onCheckedChange={(v) => (rform.ws_enabled = v)} />
-        允许 WebSocket 透传
-      </label>
-    </div>
-    <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => (routeOpen = false)}>取消</Button>
-      <Button disabled={!rform.upstream_url.startsWith('http') || rSubmitting} onclick={submitRoute}>
-        {rSubmitting ? '添加中…' : '添加'}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- 环境探测 -->
-<Dialog.Root bind:open={envOpen}>
-  <Dialog.Content class="max-h-[92vh] w-full max-w-[calc(100vw-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-lg">
-    <Dialog.Header>
-      <Dialog.Title>反代环境探测</Dialog.Title>
-      <Dialog.Description>80/443 可用性决定证书挑战方式。</Dialog.Description>
-    </Dialog.Header>
-    {#if env}
-      <div class="min-w-0 space-y-3">
-        <!-- 当前引擎横幅 -->
-        <div class="flex items-center gap-3 rounded-xl border border-primary/30 bg-gradient-to-r from-primary/[0.08] to-info/[0.05] px-4 py-3">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-            {#if env.engine === 'caddy'}<Globe size={20} />{:else}<Server size={20} />{/if}
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-[12px] text-muted-foreground">当前引擎</span>
-              <span class="text-[15px] font-bold text-foreground">{env.engine === 'caddy' ? 'Caddy 托管' : '内置引擎'}</span>
-            </div>
-            <p class="mt-0.5 truncate font-mono text-[11.5px] text-muted-foreground">
-              HTTP {env.listen_http || '未配置'} · HTTPS {env.listen_https || '未配置'}
-              {#if env.caddy_installed} · Caddy {env.caddy_version}{/if}
-            </p>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <div class="rounded-lg border border-border/60 p-3">
-            <div class="flex items-center gap-2 text-[12.5px] font-medium">
-              端口 80
-              <Badge variant="outline" class="ml-auto text-[10px] {env.http.bindable ? 'bg-success/10 text-success ring-success/20' : 'bg-warning/10 text-warning ring-warning/25'}">
-                {env.http.bindable ? '可用' : `被占用${env.http.occupier ? `（${env.http.occupier}）` : ''}`}
-              </Badge>
-            </div>
-          </div>
-          <div class="rounded-lg border border-border/60 p-3">
-            <div class="flex items-center gap-2 text-[12.5px] font-medium">
-              端口 443
-              <Badge variant="outline" class="ml-auto text-[10px] {env.https.bindable ? 'bg-success/10 text-success ring-success/20' : 'bg-warning/10 text-warning ring-warning/25'}">
-                {env.https.bindable ? '可用' : `被占用${env.https.occupier ? `（${env.https.occupier}）` : ''}`}
-              </Badge>
-            </div>
-          </div>
-        </div>
-
-        <!-- 引擎与监听切换 -->
-        <div class="rounded-lg border border-border/60 p-3.5">
-          <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-semibold">
-            引擎与监听
-            <span class="text-[10.5px] font-normal text-muted-foreground">切换立即生效并持久化（重启保持）</span>
-          </div>
-          <div class="grid gap-2.5 sm:grid-cols-3">
-            <div class="grid gap-1.5">
-              <Label class="text-[11.5px]">引擎</Label>
-              <Select.Root
-                type="single"
-                value={engineForm.engine}
-                onValueChange={(v) => (engineForm.engine = v)}
-              >
-                <Select.Trigger class="w-full text-[12px]">
-                  {engineForm.engine === 'caddy' ? 'Caddy 托管' : '内置引擎'}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="builtin">内置引擎（零依赖）</Select.Item>
-                  <Select.Item value="caddy">Caddy 托管</Select.Item>
-                </Select.Content>
-              </Select.Root>
-            </div>
-            <div class="grid gap-1.5">
-              <Label class="text-[11.5px]">HTTP 端口</Label>
-              <Input class="h-8 font-mono text-[12px]" inputmode="numeric" bind:value={engineForm.http} placeholder="80" />
-            </div>
-            <div class="grid gap-1.5">
-              <Label class="text-[11.5px]">HTTPS 端口</Label>
-              <Input class="h-8 font-mono text-[12px]" inputmode="numeric" bind:value={engineForm.https} placeholder="443" />
-            </div>
-          </div>
-          {#if engineForm.engine === 'caddy' && env && !env.caddy_installed}
-            <p class="mt-2 text-[11px] text-warning">
-              未检测到 Caddy：可一键安装（Debian/Ubuntu 走发行版或官方仓库，约 1-3 分钟），或参考 caddyserver.com/docs/install。
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              class="mt-1.5 h-7 text-[11.5px]"
-              disabled={caddyInstalling}
-              onclick={installCaddy}
-            >
-              {caddyInstalling ? '安装中，请勿关闭页面…' : '一键安装 Caddy'}
-            </Button>
-          {:else if engineForm.engine === 'caddy'}
-            <p class="mt-2 text-[11px] text-muted-foreground">切换后由 Caddy 监听上述端口并负责反代与证书；面板继续提供配置下发与观测。</p>
-          {:else}
-            <p class="mt-2 text-[11px] text-muted-foreground">端口变更会先释放旧监听再绑定新端口。</p>
-          {/if}
-          <Button size="sm" class="mt-2.5 h-8 w-full text-[12px]" disabled={engineSaving || !engineDirty} onclick={saveEngine}>
-            {engineSaving ? '应用中…' : engineDirty ? '保存并应用（重建监听）' : '无变更'}
-          </Button>
-        </div>
-        <div class="rounded-lg border border-primary/30 bg-primary/[0.05] p-3 text-[12px]">
-          <div class="font-medium text-primary">推荐：{env.recommended.challenge} · 监听 {env.recommended.http_port}/{env.recommended.https_port}</div>
-          <p class="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">{env.recommended.note}</p>
-        </div>
-        {#if !env.http.bindable}
-          <Button variant="outline" size="sm" class="w-full" onclick={() => (snippetOpen = true)}>
-            <FileCode2 size={14} /> 生成寄生前置配置片段（Nginx / Caddy）
-          </Button>
-        {/if}
-      </div>
-    {:else}
-      <div class="h-32 animate-pulse rounded-lg bg-foreground/[0.04]"></div>
-    {/if}
-    <Dialog.Footer class="sm:justify-end">
-      <Button variant="outline" onclick={() => (envOpen = false)}>关闭</Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- DNS-01 凭据 -->
-<Dialog.Root bind:open={dnsOpen}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>DNS-01 挑战凭据</Dialog.Title>
-      <Dialog.Description>
-        80/443 均不可用或签发泛域名证书时使用。凭据保存在面板本机数据库，仅用于添加/删除 _acme-challenge TXT 记录。
-      </Dialog.Description>
-    </Dialog.Header>
-    <div class="grid gap-3.5">
-      <div class="grid gap-2">
-        <Label>DNS 服务商</Label>
-        <Select.Root type="single" bind:value={dnsForm.provider}>
-          <Select.Trigger class="w-full">
-            {dnsForm.provider === 'cloudflare' ? 'Cloudflare' : dnsForm.provider === 'alidns' ? '阿里云（万网）DNS' : dnsForm.provider === 'dnspod' ? 'DNSPod / 腾讯云' : '选择服务商…'}
-          </Select.Trigger>
-          <Select.Content>
-            <Select.Item value="cloudflare">Cloudflare</Select.Item>
-            <Select.Item value="alidns">阿里云（万网）DNS</Select.Item>
-            <Select.Item value="dnspod">DNSPod / 腾讯云</Select.Item>
-          </Select.Content>
-        </Select.Root>
-      </div>
-      {#if dnsForm.provider === 'cloudflare'}
-        <div class="grid gap-2">
-          <Label for="dns-token">API Token</Label>
-          <Input id="dns-token" type="password" placeholder="Zone.DNS:Edit 权限的 API Token" bind:value={dnsForm.api_token} class="font-mono" />
-        </div>
-      {:else if dnsForm.provider === 'alidns'}
-        <div class="grid gap-2">
-          <Label for="dns-ak">AccessKey ID</Label>
-          <Input id="dns-ak" type="password" bind:value={dnsForm.api_token} class="font-mono" />
-        </div>
-        <div class="grid gap-2">
-          <Label for="dns-sk">AccessKey Secret</Label>
-          <Input id="dns-sk" type="password" bind:value={dnsForm.secret_key} class="font-mono" />
-        </div>
-      {:else if dnsForm.provider === 'dnspod'}
-        <div class="grid gap-2">
-          <Label for="dns-sid">SecretId</Label>
-          <Input id="dns-sid" type="password" bind:value={dnsForm.api_token} class="font-mono" />
-        </div>
-        <div class="grid gap-2">
-          <Label for="dns-skey">SecretKey</Label>
-          <Input id="dns-skey" type="password" bind:value={dnsForm.secret_key} class="font-mono" />
-        </div>
-      {/if}
-    </div>
-    <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => (dnsOpen = false)}>取消</Button>
-      <Button disabled={!dnsForm.provider || dnsSaving} onclick={saveDNS}>{dnsSaving ? '保存中…' : '保存'}</Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<!-- 寄生前置片段 -->
-<Dialog.Root bind:open={snippetOpen}>
+<!-- ============ 监听器对话框 ============ -->
+<Dialog.Root bind:open={listenerOpen}>
   <Dialog.Content class="sm:max-w-lg">
     <Dialog.Header>
-      <Dialog.Title>寄生前置配置片段</Dialog.Title>
-      <Dialog.Description>
-        让占用 80 端口的前置反代把 ACME 挑战路径转发给 FirePanel，HTTP-01 即可正常签发（含 IP 证书）。
-      </Dialog.Description>
+      <Dialog.Title>{editingListenerId === null ? (copyListenerId !== null ? '复制监听' : '添加监听') : '编辑监听'}</Dialog.Title>
     </Dialog.Header>
-    <div class="flex gap-1.5">
-      <button
-        type="button"
-        onclick={() => (snippetKind = 'nginx')}
-        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {snippetKind === 'nginx' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
-      >Nginx</button>
-      <button
-        type="button"
-        onclick={() => (snippetKind = 'caddy')}
-        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {snippetKind === 'caddy' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
-      >Caddy</button>
+    <div class="grid gap-3.5">
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">名称</Label>
+        <Input class="h-8 text-[12.5px]" placeholder="可选" bind:value={lform.name} />
+      </div>
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">监听地址</Label>
+        <Input class="h-8 font-mono text-[12.5px]" placeholder="留空监听全部地址" bind:value={lform.listen_ip} />
+      </div>
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">端口</Label>
+        <Input class="h-8 w-28 font-num text-[13px]" inputmode="numeric" bind:value={lform.port} />
+      </div>
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">HTTPS</Label>
+        <div class="flex items-center gap-3">
+          <Switch checked={lform.tls} onCheckedChange={(v) => (lform.tls = v)} />
+          <span class="text-[11.5px] text-muted-foreground">证书按站点域名自动签发</span>
+        </div>
+      </div>
+      {#if lform.tls}
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">额外 HTTP 端口</Label>
+          <div class="flex items-center gap-2">
+            <Input class="h-8 w-24 font-num text-[13px]" inputmode="numeric" bind:value={lform.http_port} placeholder="不开" />
+            {#if Number(lform.http_port) > 0}
+              <Select.Root type="single" value={lform.http_port_mode} onValueChange={(v) => (lform.http_port_mode = v ?? 'serve')}>
+                <Select.Trigger class="h-8 w-32 text-[12px]">
+                  {lform.http_port_mode === 'serve' ? '直接提供' : '跳转 HTTPS'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="redirect">跳转 HTTPS</Select.Item>
+                  <Select.Item value="serve">直接提供</Select.Item>
+                </Select.Content>
+              </Select.Root>
+            {/if}
+          </div>
+        </div>
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">明文请求</Label>
+          <Select.Root type="single" value={lform.plain_http} onValueChange={(v) => (lform.plain_http = v ?? '')}>
+            <Select.Trigger class="h-8 w-44 text-[12px]">
+              {lform.plain_http === 'serve' ? '直接提供站点' : lform.plain_http === 'redirect' ? '跳转 HTTPS' : '不接受'}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="">不接受</Select.Item>
+              <Select.Item value="redirect">跳转 HTTPS</Select.Item>
+              <Select.Item value="serve">直接提供站点</Select.Item>
+            </Select.Content>
+          </Select.Root>
+        </div>
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">最低 TLS</Label>
+          <Select.Root type="single" value={lform.min_tls} onValueChange={(v) => (lform.min_tls = v ?? '1.2')}>
+            <Select.Trigger class="h-8 w-28 text-[12px]">TLS {lform.min_tls || '1.2'}</Select.Trigger>
+            <Select.Content>
+              {#each ['1.0', '1.1', '1.2', '1.3'] as v (v)}
+                <Select.Item value={v}>TLS {v}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
+      {/if}
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">备注</Label>
+        <Input class="h-8 text-[12.5px]" bind:value={lform.remark} />
+      </div>
+      <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+        <Label class="text-[12px]">启用</Label>
+        <Switch checked={lform.enabled} onCheckedChange={(v) => (lform.enabled = v)} />
+      </div>
+      {#if copyListenerId !== null}
+        <p class="text-[11.5px] text-muted-foreground">保存后会把原监听的站点一并复制（站点为停用状态）。</p>
+      {/if}
     </div>
-    <pre class="max-h-72 overflow-auto rounded-lg border border-border/60 bg-foreground/[0.03] p-3.5 font-mono text-[11.5px] leading-relaxed">{snippetKind === 'nginx' ? nginxSnippet : caddySnippet}</pre>
     <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => { copyText(snippetKind === 'nginx' ? nginxSnippet : caddySnippet) }}>复制</Button>
-      <Button variant="outline" onclick={() => (snippetOpen = false)}>关闭</Button>
+      <Button variant="outline" size="sm" class="h-8" onclick={() => (listenerOpen = false)}>取消</Button>
+      <Button size="sm" class="h-8" disabled={saving || !(Number(lform.port) >= 1 && Number(lform.port) <= 65535)} onclick={saveListener}>
+        {saving ? '保存中…' : '保存'}
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
 
-<!-- Caddyfile 管理：读取服务器真实文件；保存只合并托管段/追加，并自动备份 -->
-<Dialog.Root bind:open={cfOpen}>
+<!-- ============ 站点对话框（Tab：基础 / 安全 / 流量 / 头） ============ -->
+<Dialog.Root bind:open={siteOpen}>
   <Dialog.Content class="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2">
-        <FileCode2 size={15} class="text-primary" />
-        Caddyfile
-        <Badge variant="outline" class="ml-1 bg-muted font-mono text-[10px] font-normal text-muted-foreground ring-border">{cfPath}</Badge>
-      </Dialog.Title>
-      <Dialog.Description>
-        这里显示服务器上<span class="font-medium text-foreground">实际的配置文件</span>；保存时先语法校验、再自动备份，最后才写入并重载。
-      </Dialog.Description>
-    </Dialog.Header>
-
-    <!-- 文件状态：明确「谁会动哪部分」 -->
-    <div class="rounded-lg border border-info/30 bg-info/[0.05] px-3.5 py-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
-      <p class="flex flex-wrap items-center gap-1.5">
-        <span class="font-medium text-foreground">当前状态：</span>
-        {#if cfReadError}
-          <Badge variant="outline" class="border-destructive/40 bg-destructive/10 text-[10px] text-destructive ring-destructive/20">读取失败</Badge>
-          <span>无法读取 {cfPath}（{cfReadError}），保存将被拒绝，以免盲目覆盖。</span>
-        {:else if !cfExists}
-          <Badge variant="outline" class="text-[10px]">文件不存在</Badge>
-          <span>保存将创建该文件，写入下方内容。</span>
-        {:else if cfManaged}
-          <Badge variant="outline" class="border-success/40 bg-success/10 text-[10px] text-success ring-success/20">面板托管段</Badge>
-          <span>面板增删域名时只替换 managed begin / managed end 之间的内容，其余部分原样保留。</span>
-        {:else if cfLegacy}
-          <Badge variant="outline" class="border-warning/40 bg-warning/10 text-[10px] text-warning ring-warning/20">旧版生成物</Badge>
-          <span>下次下发会迁移为托管段格式；原文件会备份为 {cfPath}.fp-orig 与 .bak-时间戳。</span>
-        {:else}
-          <Badge variant="outline" class="text-[10px]">已有第三方配置</Badge>
-          <span>面板只会把托管段<span class="font-medium text-foreground">追加</span>到文件末尾，你现有的站点与 snippets 不会被改写。</span>
+        {#if siteIsDefault}默认站点{:else}{editingSiteId === null ? (copySiteId !== null ? '复制站点' : '添加站点') : '编辑站点'}{/if}
+        {#if siteIsDefault}
+          <Badge variant="outline" class="h-[19px] border-warning/40 bg-warning/[0.06] text-[10.5px] text-warning">未匹配域名兜底</Badge>
         {/if}
-      </p>
-      <p class="mt-1">保存前自动备份；校验不通过则完全不落盘。</p>
-    </div>
+      </Dialog.Title>
+    </Dialog.Header>
+    <Tabs.Root value={siteTab} onValueChange={(v) => (siteTab = v as typeof siteTab)}>
+      <Tabs.List class="grid w-full grid-cols-4">
+        <Tabs.Trigger value="basic">基础</Tabs.Trigger>
+        {#if draft.type !== 'close'}
+          <Tabs.Trigger value="security">安全</Tabs.Trigger>
+          <Tabs.Trigger value="traffic">流量</Tabs.Trigger>
+          <Tabs.Trigger value="headers">头</Tabs.Trigger>
+        {:else}
+          <Tabs.Trigger value="security" disabled>安全</Tabs.Trigger>
+          <Tabs.Trigger value="traffic" disabled>流量</Tabs.Trigger>
+          <Tabs.Trigger value="headers" disabled>头</Tabs.Trigger>
+        {/if}
+      </Tabs.List>
 
-    <!-- 视图切换：服务器实际文件 / 面板生成预览 -->
-    <div class="flex flex-wrap items-center gap-1.5">
-      <button
-        type="button"
-        onclick={() => (cfTab = 'current')}
-        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {cfTab === 'current' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
-      >服务器实际文件</button>
-      <button
-        type="button"
-        onclick={() => (cfTab = 'generated')}
-        class="rounded-lg border px-3 py-1 text-[12px] font-medium transition-[color,background-color,border-color] {cfTab === 'generated' ? 'border-primary/50 bg-primary/[0.08] text-primary ring-1 ring-primary/30' : 'border-border/60 text-muted-foreground hover:text-foreground'}"
-      >面板生成预览</button>
-      <Button size="sm" variant="ghost" class="h-7 text-[11.5px]" disabled={cfLoading} onclick={reloadCaddyfile}>
-        <RefreshCw size={12} class="mr-1" /> 重新读取
-      </Button>
-    </div>
-
-    {#if cfLoading}
-      <div class="h-72 animate-pulse rounded-lg bg-foreground/[0.04]"></div>
-    {:else if cfTab === 'generated'}
-      <div class="space-y-2">
-        <pre class="h-80 overflow-auto rounded-lg border border-border/60 bg-foreground/[0.03] p-3.5 font-mono text-[11.5px] leading-relaxed">{cfGenerated}</pre>
-        <div class="flex flex-wrap items-center gap-2">
-          <Button size="sm" class="h-8 text-[12px]" onclick={appendGenerated}>追加到编辑区末尾</Button>
-          <Button size="sm" variant="outline" class="h-8 text-[12px]" onclick={() => { copyText(cfGenerated) }}>复制</Button>
+      <Tabs.Content value="basic" class="mt-3 grid gap-3.5">
+        {#if !siteIsDefault}
+          <div class="grid gap-1.5">
+            <Label class="text-[12px]">域名</Label>
+            <textarea rows="2" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed outline-none placeholder:text-muted-foreground/40 focus:ring-2 focus:ring-ring/30" placeholder="app.example.com, *.example.com, 203.0.113.9" bind:value={domainsText}></textarea>
+          </div>
+        {/if}
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">名称</Label>
+          <Input class="h-8 text-[12.5px]" placeholder="可选" bind:value={draft.name} />
         </div>
-      </div>
-    {:else}
-      {#if cfConflict}
-        <div class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[11.5px] text-destructive">
-          <TriangleAlert size={13} class="mt-0.5 shrink-0" />
-          <span>服务器文件在你编辑期间已被改动，保存已取消。请点「重新读取」拿到最新内容，再把你的修改补进去（当前编辑区内容不会被自动丢弃）。</span>
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">类型</Label>
+          <div class="flex flex-wrap gap-1.5">
+            {#each Object.entries(typeLabels) as [t, label] (t)}
+              <button
+                type="button"
+                onclick={() => (draft.type = t as SiteType)}
+                class="rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-all {draft.type === t
+                  ? 'border-primary/50 bg-primary/[0.06] text-primary'
+                  : 'border-border/60 text-muted-foreground hover:text-foreground'}"
+              >{label}</button>
+            {/each}
+          </div>
         </div>
-      {/if}
-      <textarea
-        class="h-96 w-full resize-none rounded-lg border border-input bg-card p-3.5 font-mono text-[12px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/40"
-        spellcheck="false"
-        bind:value={cfEdit}
-      ></textarea>
+        {#if draft.type === 'proxy'}
+          <div class="grid gap-1.5">
+            <Label class="text-[12px]">后端</Label>
+            <textarea rows="3" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed outline-none placeholder:text-muted-foreground/40 focus:ring-2 focus:ring-ring/30" placeholder={"http://127.0.0.1:8080\nhttp://10.0.0.2:8080 weight=3\nhttp://10.0.0.3:8080 backup"} bind:value={targetsText}></textarea>
+            <div class="text-[11.5px] text-muted-foreground">每行一个；可加 weight=N 与 backup。多项时按负载均衡分发。</div>
+            {#if targetsText.split('\n').filter((t) => /^https?:\/\/.+/.test(t.trim())).length > 1}
+              <Select.Root type="single" bind:value={draft.lb_policy}>
+                <Select.Trigger class="h-8 w-full text-[12px]">
+                  {draft.lb_policy === 'random' ? '随机' : draft.lb_policy === 'ip_hash' ? 'IP 哈希' : draft.lb_policy === 'least_conn' ? '最少连接' : '加权轮询'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="">加权轮询</Select.Item>
+                  <Select.Item value="random">随机</Select.Item>
+                  <Select.Item value="ip_hash">IP 哈希（同源同后端）</Select.Item>
+                  <Select.Item value="least_conn">最少连接</Select.Item>
+                </Select.Content>
+              </Select.Root>
+            {/if}
+          </div>
+          <div class="grid gap-1.5">
+            <div class="flex items-center justify-between">
+              <Label class="text-[12px]">分路径</Label>
+              <Button variant="ghost" size="sm" class="h-6 gap-0.5 px-1.5 text-[11.5px] text-muted-foreground" onclick={() => (locRows = [...locRows, { prefix: '/', targets: '', strip: false }])}><Plus size={12} /> 路径</Button>
+            </div>
+            {#if locRows.length === 0}
+              <p class="text-[11.5px] text-muted-foreground/70">未分流的路径走站点后端。</p>
+            {:else}
+              <div class="space-y-1.5">
+                {#each locRows as loc, i (i)}
+                  <div class="rounded-lg border border-border/60 p-2.5">
+                    <div class="flex items-center gap-1.5">
+                      <Input class="h-8 w-28 shrink-0 font-mono text-[12px]" placeholder="/api/" bind:value={loc.prefix} />
+                      <textarea rows="1" class="min-h-8 flex-1 resize-y rounded-lg border border-input bg-card px-3 py-1.5 font-mono text-[12px] outline-none focus:ring-2 focus:ring-ring/30" placeholder="http://10.0.0.3:9000, http://10.0.0.4:9000" bind:value={loc.targets}></textarea>
+                      <Button variant="ghost" size="icon" class="size-7 shrink-0 text-muted-foreground hover:text-destructive" onclick={() => (locRows = locRows.filter((_, j) => j !== i))}>
+                        <X size={13} />
+                      </Button>
+                    </div>
+                    <label class="mt-1.5 flex cursor-pointer items-center gap-2 text-[11.5px] text-muted-foreground">
+                      <Switch class="scale-90" checked={loc.strip} onCheckedChange={(v) => (loc.strip = v)} />
+                      去掉路径前缀（/api/zyqd/abc 发往后端为 /abc）
+                    </label>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {:else if draft.type === 'redirect'}
+          <div class="grid gap-1.5">
+            <Label class="text-[12px]">重定向目标</Label>
+            <Input class="font-mono text-[12.5px]" placeholder="https://example.com 或 https://{'{host}'}:8443" bind:value={draft.redirect_to} />
+            <div class="flex items-center gap-3">
+              <Label class="text-[12px]">状态码</Label>
+              <Select.Root type="single" value={String(draft.redirect_code)} onValueChange={(v) => (draft.redirect_code = parseInt(v, 10) || 302)}>
+                <Select.Trigger class="h-8 w-28 text-[12px]">
+                  {draft.redirect_code === 301 ? '301 永久' : draft.redirect_code === 307 ? '307 临时' : draft.redirect_code === 308 ? '308 永久' : '302 临时'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="301">301 永久</Select.Item>
+                  <Select.Item value="302">302 临时</Select.Item>
+                  <Select.Item value="307">307 临时</Select.Item>
+                  <Select.Item value="308">308 永久</Select.Item>
+                </Select.Content>
+              </Select.Root>
+              <label class="flex cursor-pointer items-center gap-2 text-[12.5px]">
+                <Switch checked={draft.keep_path} onCheckedChange={(v) => (draft.keep_path = v)} />
+                保留路径
+              </label>
+            </div>
+          </div>
+        {:else if draft.type === 'static'}
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">目录</Label>
+            <Input class="font-mono text-[12.5px]" placeholder="/data/www" bind:value={draft.root} />
+          </div>
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">列目录</Label>
+            <Switch checked={draft.list_dir} onCheckedChange={(v) => (draft.list_dir = v)} />
+          </div>
+        {:else if draft.type === 'text'}
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">状态码</Label>
+            <Input class="h-8 w-24 font-num text-[13px]" inputmode="numeric" bind:value={draft.status_code} />
+          </div>
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">Content-Type</Label>
+            <Input class="h-8 font-mono text-[12px]" bind:value={draft.content_type} />
+          </div>
+          <div class="grid gap-1.5">
+            <Label class="text-[12px]">内容</Label>
+            <textarea rows="4" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12.5px] outline-none focus:ring-2 focus:ring-ring/30" bind:value={draft.text}></textarea>
+          </div>
+        {:else if draft.type === 'close'}
+          <div class="rounded-lg border border-destructive/25 bg-destructive/[0.04] px-3.5 py-3">
+            <span class="font-num text-[13px] font-semibold text-destructive">444</span>
+            <span class="ml-2 text-[12px] text-muted-foreground">连接直接断开，不返回任何响应。适合默认站点拒绝未知域名的扫描。</span>
+          </div>
+        {/if}
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">启用</Label>
+          <Switch checked={draft.enabled} onCheckedChange={(v) => (draft.enabled = v)} />
+        </div>
+      </Tabs.Content>
 
-      <div class="flex flex-wrap items-center gap-2">
-        <Button size="sm" class="h-8 text-[12px]" disabled={!cfDirty || cfSaving || !!cfReadError} onclick={saveCaddyfileEdit}>
-          {cfSaving ? '校验并保存中…' : cfDirty ? '保存并重载' : '已保存'}
-        </Button>
-        <Button size="sm" variant="outline" class="h-8 text-[12px]" disabled={!cfDirty} onclick={() => (cfEdit = cfCurrent)} title="放弃手改，回到服务器上的内容">
-          还原修改
-        </Button>
-        <span class="text-[10.5px] text-muted-foreground">
-          {#if cfDirty}有未保存修改{:else}与服务器一致{/if}
-        </span>
-      </div>
-    {/if}
+      <Tabs.Content value="security" class="mt-3 grid gap-3.5">
+        <div class="grid gap-1.5">
+          <Label class="text-[12px]">访问控制</Label>
+          <div class="grid grid-cols-3 gap-1.5">
+            {#each [['', '不限'], ['whitelist', '白名单'], ['blacklist', '黑名单']] as [m, label] (m)}
+              <button
+                type="button"
+                onclick={() => (draft.ip_mode = m as WSSite['ip_mode'])}
+                class="rounded-lg border py-1.5 text-[12px] font-medium transition-all {draft.ip_mode === m
+                  ? 'border-primary/50 bg-primary/[0.06] text-primary'
+                  : 'border-border/60 text-muted-foreground hover:text-foreground'}"
+              >{label}</button>
+            {/each}
+          </div>
+          {#if draft.ip_mode}
+            <textarea rows="3" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[11.5px] outline-none focus:ring-2 focus:ring-ring/30" placeholder={'10.0.0.0/8\n192.168.1.1'} bind:value={ipText}></textarea>
+          {/if}
+        </div>
+        <div class="rounded-lg border border-border/60 p-3">
+          <label class="flex cursor-pointer items-center gap-2.5">
+            <Switch checked={draft.rate_limit.enable} onCheckedChange={(v) => (draft.rate_limit = { ...draft.rate_limit, enable: v })} />
+            <span class="text-[12.5px] font-medium">限流</span>
+            {#if draft.rate_limit.enable}
+              <span class="font-num ml-auto text-[10.5px] text-muted-foreground">{draft.rate_limit.rate}/s · burst {draft.rate_limit.burst}{draft.rate_limit.max_conns > 0 ? ` · 单 IP ${draft.rate_limit.max_conns} 并发` : ''}</span>
+            {/if}
+          </label>
+          {#if draft.rate_limit.enable}
+            <div class="mt-2.5 grid grid-cols-3 gap-2">
+              <label class="grid gap-1 text-[11px] text-muted-foreground">每秒请求<input type="number" min="0.1" step="0.1" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.rate_limit.rate} /></label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">突发<input type="number" min="1" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.rate_limit.burst} /></label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">单 IP 并发<input type="number" min="0" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.rate_limit.max_conns} /></label>
+            </div>
+          {/if}
+        </div>
+      </Tabs.Content>
 
+      <Tabs.Content value="traffic" class="mt-3 grid gap-3.5">
+        <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+          <Label class="text-[12px]">gzip 压缩</Label>
+          <Switch checked={draft.compress} onCheckedChange={(v) => (draft.compress = v)} />
+        </div>
+        {#if draft.type === 'proxy'}
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">转发真实 IP</Label>
+            <Switch checked={draft.forwarded_headers} onCheckedChange={(v) => (draft.forwarded_headers = v)} />
+          </div>
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">Host 用后端地址</Label>
+            <Switch checked={draft.use_target_host} onCheckedChange={(v) => (draft.use_target_host = v)} />
+          </div>
+          <div class="grid grid-cols-[110px_1fr] items-center gap-3">
+            <Label class="text-[12px]">跳过后端证书校验</Label>
+            <Switch checked={draft.insecure_skip_verify} onCheckedChange={(v) => (draft.insecure_skip_verify = v)} />
+          </div>
+        {/if}
+        <div class="grid gap-1.5">
+          <Label class="text-[12px]">后端超时（秒，0 为默认）</Label>
+          <div class="grid grid-cols-3 gap-2">
+            <label class="grid gap-1 text-[11px] text-muted-foreground">连接<input type="number" min="0" max="300" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.timeouts.connect} /></label>
+            <label class="grid gap-1 text-[11px] text-muted-foreground">TLS 握手<input type="number" min="0" max="300" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.timeouts.tls_handshake} /></label>
+            <label class="grid gap-1 text-[11px] text-muted-foreground">响应头<input type="number" min="0" class="h-7 rounded-md border border-input bg-card px-2 font-num text-[12px] outline-none" bind:value={draft.timeouts.response_header} /></label>
+          </div>
+        </div>
+      </Tabs.Content>
+
+      <Tabs.Content value="headers" class="mt-3 grid gap-3.5">
+        <label class="grid gap-1.5 text-[12px] text-muted-foreground">
+          请求头（Key: Value，每行一条，值为空删除）
+          <textarea rows="4" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[11.5px] outline-none focus:ring-2 focus:ring-ring/30" bind:value={reqHText}></textarea>
+        </label>
+        <label class="grid gap-1.5 text-[12px] text-muted-foreground">
+          响应头
+          <textarea rows="4" class="w-full resize-none rounded-lg border border-input bg-card px-3 py-2 font-mono text-[11.5px] outline-none focus:ring-2 focus:ring-ring/30" bind:value={resHText}></textarea>
+        </label>
+      </Tabs.Content>
+    </Tabs.Root>
     <Dialog.Footer class="gap-2 sm:justify-end">
-      <Button variant="outline" onclick={() => { copyText(cfEdit) }}>
-        <Copy size={13} /> 复制
+      <Button variant="outline" size="sm" class="h-8" onclick={() => (siteOpen = false)}>取消</Button>
+      <Button size="sm" class="h-8" disabled={!formValid || saving} onclick={saveSite}>
+        {saving ? '保存中…' : '保存'}
       </Button>
-      <Button variant="outline" disabled={!cfEdit} onclick={downloadCaddyfile}>
-        <Download size={13} /> 导出
-      </Button>
-      <Button variant="outline" onclick={() => (cfOpen = false)}>关闭</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
+
+<!-- 站点行菜单（共享片段组件） -->
+{#snippet SiteMenu(s: WSSite, l: WSListener, onedit: () => void, oncopy: () => void, onremove: () => void, onreset: () => void)}
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button {...props} variant="ghost" size="icon" class="size-7 text-muted-foreground"><MoreHorizontal size={15} /></Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content align="end" class="w-36">
+      <DropdownMenu.Item onclick={onedit}><Pencil size={13} /> 编辑</DropdownMenu.Item>
+      <DropdownMenu.Item onclick={oncopy} disabled={s.default}><CopyPlus size={13} /> 复制</DropdownMenu.Item>
+      {#if s.default}
+        <DropdownMenu.Item variant="destructive" onclick={onreset}><Trash2 size={13} /> 重置默认站点</DropdownMenu.Item>
+      {:else}
+        <DropdownMenu.Item variant="destructive" onclick={onremove}>
+          {#if confirmingDelete === 's' + s.id}<ShieldCheck size={13} /> 确认删除{:else}<Trash2 size={13} /> 删除{/if}
+        </DropdownMenu.Item>
+      {/if}
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+{/snippet}

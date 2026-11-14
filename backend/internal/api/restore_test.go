@@ -42,15 +42,34 @@ func TestValidateBundleRejectsBadForward(t *testing.T) {
 }
 
 func TestValidateBundleRejectsInjectedRoutePath(t *testing.T) {
+	// 旧版反代备份：启用的路由会转换为站点的分路径规则，
+	// 注入类内容（花括号/空格等）必须在写库前被引擎校验拦下
 	b := &store.Bundle{
 		RPDomains: []store.RPDomainBackup{{RPDomain: store.RPDomain{ID: 1, Domain: "example.com", TLSMode: "none"}}},
 		RPRoutes: []store.RPRoute{{
-			DomainID: 1, PathMatch: "/a } evil", UpstreamURL: "http://127.0.0.1:8080",
+			DomainID: 1, PathMatch: "/a } evil", UpstreamURL: "http://127.0.0.1:8080", Enabled: true,
 		}},
 	}
 	err := validateBundle(b)
 	if err == nil || !strings.Contains(err.Error(), "路径") {
 		t.Fatalf("非法路径应被拒绝，得到 %v", err)
+	}
+}
+
+// 新版站点备份：分路径前缀同样过引擎校验。
+func TestValidateBundleRejectsInjectedLocationPrefix(t *testing.T) {
+	b := &store.Bundle{
+		WSSites: []store.WSSiteBackup{{
+			WSSite: store.WSSite{
+				Name: "app", Domains: []string{"example.com"}, Type: "proxy", Enabled: true,
+				TLSMode: "none",
+			},
+		}},
+	}
+	// 注入非法分路径前缀
+	b.WSSites[0].Config = []byte(`{"targets":["http://127.0.0.1:8080"],"locations":[{"prefix":"/a } evil","targets":["http://127.0.0.1:9000"]}]}`)
+	if err := validateBundle(b); err == nil || !strings.Contains(err.Error(), "路径") {
+		t.Fatalf("非法分路径前缀应被拒绝，得到 %v", err)
 	}
 }
 

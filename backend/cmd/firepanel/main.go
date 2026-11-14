@@ -64,11 +64,11 @@ func main() {
 	// 否则启动重放会跳过延时/确认流程，把可能锁死 SSH 的规则直接写进内核。
 	a.RecoverPendingDanger()
 
-	// 反向代理：加载数据库中的域名/路由（无域名则不监听）
-	if err := a.ReloadProxy(); err != nil {
-		log.Warn("反向代理启动失败（不影响防火墙功能）", "err", err)
+	// 旧反代数据迁移为 Web 服务站点（幂等），再加载数据库中的站点（无站点则不监听）
+	a.MigrateRPToSites()
+	if err := a.ReloadSites(); err != nil {
+		log.Warn("Web 服务启动失败（不影响防火墙功能）", "err", err)
 	}
-	a.ProxyHealthLoop(ctx)
 	a.LoadNotify()
 	a.Jail.Reload()
 	if err := a.Sched.Start(); err != nil {
@@ -126,7 +126,7 @@ func main() {
 	log.Info("收到退出信号，正在关闭")
 	a.Sched.Stop()
 	a.Jail.Stop()
-	a.Proxy.Stop()
+	a.WS.Stop()
 	if serveFailed.Load() {
 		os.Exit(1)
 	}

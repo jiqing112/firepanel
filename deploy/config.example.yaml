@@ -9,15 +9,13 @@ server:
   # 数据目录（SQLite 与证书）
   data_dir: "/opt/firepanel/data"
 
-  # 反向代理监听。三种部署形态：
-  #   1) 直接占用 80/443：保持默认，面板内置引擎做入口反代
+  # Web 服务（站点反代）监听。两种部署形态：
+  #   1) 直接占用 80/443：保持默认，面板引擎做入口
   #      proxy_http: ":80"
   #      proxy_https: ":443"
   #   2) 占用非 80/443 端口（80/443 留给其他服务）：改成自定义端口即可
   #      proxy_http: ":8180"
   #      proxy_https: ":8143"
-  #   3) 交给 Caddy 托管（见下方 proxy 段）：面板经 Admin API 下发配置，
-  #      由 Caddy 占用 80/443 或任意端口做反代，面板自身不监听反代端口
   proxy_http: ":80"
   proxy_https: ":443"
 
@@ -74,16 +72,3 @@ sync:
 
 logging:
   level: "info"
-
-# ── 反向代理实现选择 ────────────────────────────────────────────
-# backend:
-#   builtin  面板内置反代引擎（默认）：自动证书（含 Let's Encrypt IP 证书）、
-#            健康检查、路径路由全部由面板管理，监听上面的 proxy_http/proxy_https
-#   caddy    托管给本机 Caddy：面板把域名/路由/上游配置经 Admin API 下发给
-#            Caddy（需已安装并运行 Caddy，且 caddy_admin 可达）。证书由 Caddy
-#            的 automatic HTTPS 管理（IP 证书需 Caddy ≥ 2.10）；面板自身 HTTPS
-#            仍由面板内置 certmagic 管理，不受此开关影响
-# 注意：caddy 模式下请让 Caddy 独占该 Caddy 实例的配置管理（/load 为整配置替换）
-proxy:
-  backend: "builtin"
-  caddy_admin: "http://127.0.0.1:2019"

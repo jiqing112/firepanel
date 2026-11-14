@@ -234,53 +234,150 @@ export interface AuditEntry {
   created_at: string;
 }
 
-export interface ProxyRoute {
-  id: number;
-  domain_id: number;
-  path_match: string;
-  upstream_url: string;
-  ws_enabled: boolean;
-  health_path: string;
-  enabled: boolean;
-  health_status: 'unknown' | 'ok' | 'down';
-  health_checked_at: string | null;
-  created_at: string;
+export interface WSHealth {
+  enable: boolean;
+  mode: 'http' | 'tcp';
+  path: string;
+  interval: number;
+  timeout: number;
+  fails: number;
+  passes: number;
 }
 
-export interface ProxyDomain {
+export interface WSLocation {
+  prefix: string;
+  targets: string[];
+  strip_prefix: boolean;
+  request_headers: string[];
+}
+
+export interface WSTimeouts {
+  connect: number;
+  tls_handshake: number;
+  response_header: number;
+}
+
+export interface WSRateLimit {
+  enable: boolean;
+  rate: number;
+  burst: number;
+  max_conns: number;
+}
+
+/** 站点：字段与后端引擎模型一致（cert_pem/key_pem 仅提交时携带，不回读）。 */
+export interface WSSite {
   id: number;
-  domain: string;
+  listener_id: number;
+  name: string;
+  domains: string[];
+  type: 'proxy' | 'redirect' | 'static' | 'text' | 'close';
   enabled: boolean;
+  default: boolean;
+  remark: string;
   tls_mode: 'auto' | 'manual' | 'none';
   challenge: '' | 'auto' | 'http' | 'alpn' | 'dns';
-  caddy_opts: string;
+  cert_pem?: string;
+  key_pem?: string;
   cert_status: 'none' | 'pending' | 'ok' | 'error';
   cert_error: string;
   cert_expires_at: string | null;
+  created_at: string;
+  targets: string[];
+  lb_policy: '' | 'random' | 'ip_hash' | 'least_conn';
+  health: WSHealth;
+  locations: WSLocation[];
+  use_target_host: boolean;
+  forwarded_headers: boolean;
+  insecure_skip_verify: boolean;
+  timeouts: WSTimeouts;
+  redirect_to: string;
+  redirect_code: number;
+  keep_path: boolean;
+  root: string;
+  list_dir: boolean;
+  text: string;
+  content_type: string;
+  status_code: number;
+  ip_mode: '' | 'whitelist' | 'blacklist';
+  ip_list: string[];
+  compress: boolean;
+  rate_limit: WSRateLimit;
+  request_headers: string[];
+  response_headers: string[];
+}
+
+export type WSSiteInput = Partial<WSSite> & { domains: string[] };
+
+export interface UpstreamStatus {
+  url: string;
+  weight: number;
+  backup: boolean;
+  healthy: boolean;
+  conns: number;
+  scope?: string;
+  match?: string;
+  requests: number;
+  bytes: number;
+}
+
+export interface WSSiteStatus {
+  id: number;
+  listener: number;
+  name: string;
+  type: string;
+  domains: string[];
+  default: boolean;
+  requests: number;
+  active: number;
+  errors: number;
+  blocked: number;
+  qps: number;
+  rate60: number[];
+  cert?: string;
+  upstreams?: UpstreamStatus[];
+}
+
+export interface WSListenerStatus {
+  id: number;
+  name: string;
+  port: number;
+  tls: boolean;
+  http_port: number;
+  http_port_mode?: string;
+  plain_http?: string;
+  running: boolean;
+  error?: string;
+}
+
+export interface WSStatus {
+  running: boolean;
+  started_at: string | null;
+  listeners: WSListenerStatus[];
+  sites: WSSiteStatus[];
+}
+
+/** 监听：config 与后端引擎的监听字段一致。 */
+export interface WSListenerConfig {
+  listen_ip: string;
+  port: number;
+  tls: boolean;
+  min_tls: string;
+  plain_http: string;
+  http_port: number;
+  http_port_mode: string;
+}
+
+export interface WSListener {
+  id: number;
+  name: string;
+  enabled: boolean;
+  config: WSListenerConfig;
   remark: string;
   created_at: string;
-  routes: ProxyRoute[];
+  site_count?: number;
 }
 
-export interface CaddySiteOpts {
-  encode: boolean;
-  security_headers: boolean;
-  log_access: boolean;
-}
-
-/** 域名创建/更新入参：caddy_opts 可传 JSON 字符串或结构化对象（后端按 RawMessage 解析）；
- *  cert_pem/key_pem 仅提交时携带，不回读（后端 json:"-"）。 */
-export type ProxyDomainInput = Partial<Omit<ProxyDomain, 'caddy_opts'>> & {
-  domain?: string;
-  caddy_opts?: string | CaddySiteOpts;
-  cert_pem?: string;
-  key_pem?: string;
-};
-
-export interface CaddyGlobalSettings {
-  email: string;
-  debug: boolean;
-}
+export type WSListenerInput = Partial<WSListener> & { config: Partial<WSListenerConfig> & { port: number } };
 
 export interface PortProbe {
   port: number;
@@ -292,12 +389,10 @@ export interface PortProbe {
 export interface ProxyEnv {
   http: PortProbe;
   https: PortProbe;
-  engine: string;
   listen_http: string;
   listen_https: string;
+  http_mode: string;
   recommended: { http_port: number; https_port: number; challenge: string; note: string };
-  caddy_installed: boolean;
-  caddy_version: string;
 }
 
 export interface DNSProviderConfig {
@@ -459,47 +554,29 @@ export const backend = {
     api.post<{ sync: SyncResult }>('/system/danger/confirm', { token, stage }),
   cancelDanger: (token: string) => api.post<{ cancelled: boolean }>('/system/danger/cancel', { token }),
 
-  /* 反向代理 */
-  proxyDomains: () => api.get<{ items: ProxyDomain[]; running: boolean }>('/proxy/domains'),
-  createProxyDomain: (d: ProxyDomainInput & { domain: string }) =>
-    api.post<{ item: ProxyDomain }>('/proxy/domains', d),
-  updateProxyDomain: (id: number, d: ProxyDomainInput) => api.put<{ item: ProxyDomain }>(`/proxy/domains/${id}`, d),
-  deleteProxyDomain: (id: number) => api.delete<{ ok: boolean }>(`/proxy/domains/${id}`),
-  createProxyRoute: (domainId: number, r: Partial<ProxyRoute>) =>
-    api.post<{ item: ProxyRoute }>(`/proxy/domains/${domainId}/routes`, r),
-  updateProxyRoute: (id: number, r: Partial<ProxyRoute>) => api.put<{ item: ProxyRoute }>(`/proxy/routes/${id}`, r),
-  deleteProxyRoute: (id: number) => api.delete<{ ok: boolean }>(`/proxy/routes/${id}`),
-  proxyEnv: () => api.get<{ env: ProxyEnv }>('/proxy/env'),
-  setProxyEngine: (p: { engine: string; http_addr: string; https_addr: string }) =>
-    api.post<{ ok: boolean }>('/proxy/engine', p),
-  installCaddy: () => api.post<{ version: string }>('/proxy/caddy/install'),
-  caddyfile: () =>
-    api.get<{
-      /** 兼容字段：文件存在时为磁盘真实内容，否则为面板生成预览 */
-      caddyfile: string;
-      /** 服务器磁盘上的实际内容 */
-      current: string;
-      /** 面板生成预览（托管段） */
-      generated: string;
-      custom: string;
-      path: string;
-      exists: boolean;
-      managed: boolean;
-      legacy: boolean;
-      merge_mode: 'create' | 'update' | 'migrate' | 'append';
-      hash: string;
-      read_error?: string;
-    }>('/proxy/caddyfile'),
-  saveCaddyfile: (content: string, baseHash = '') =>
-    api.post<{ ok: boolean; backup: string; hash: string; path: string }>('/proxy/caddyfile', {
-      content,
-      base_hash: baseHash,
-    }),
-  setCaddyCustom: (custom: string) => api.post<{ ok: boolean }>('/proxy/caddy-custom', { custom }),
-  caddyGlobal: () => api.get<{ config: CaddyGlobalSettings }>('/proxy/caddy-global'),
-  setCaddyGlobal: (g: CaddyGlobalSettings) => api.post<{ ok: boolean }>('/proxy/caddy-global', g),
-  dnsConfig: () => api.get<{ config: DNSProviderConfig }>('/proxy/dns-config'),
-  setDNSConfig: (c: DNSProviderConfig) => api.post<{ config: DNSProviderConfig }>('/proxy/dns-config', c),
+  /* Web 服务 */
+  wsSites: () => api.get<{ items: WSSite[]; running: boolean }>('/ws/sites'),
+  wsListeners: () => api.get<{ items: WSListener[]; running: boolean }>('/ws/listeners'),
+  createWSListener: (l: WSListenerInput) => api.post<{ id: number }>('/ws/listeners', l),
+  updateWSListener: (id: number, l: WSListenerInput) => api.put<{ ok: boolean }>(`/ws/listeners/${id}`, l),
+  setWSListenerEnabled: (id: number, enabled: boolean) =>
+    api.patch<{ ok: boolean }>(`/ws/listeners/${id}/enabled`, { enabled }),
+  deleteWSListener: (id: number) => api.delete<{ ok: boolean }>(`/ws/listeners/${id}`),
+  wsTopology: (focus = '', ip = '') => {
+    const q = new URLSearchParams();
+    if (focus) q.set('focus', focus);
+    if (ip) q.set('ip', ip);
+    return api.get<{ view: import('./topology').TopologyView }>(`/ws/topology?${q.toString()}`);
+  },
+  createWSSite: (d: WSSiteInput) => api.post<{ id: number }>('/ws/sites', d),
+  updateWSSite: (id: number, d: WSSiteInput) => api.put<{ ok: boolean }>(`/ws/sites/${id}`, d),
+  setWSSiteEnabled: (id: number, enabled: boolean) =>
+    api.patch<{ ok: boolean }>(`/ws/sites/${id}/enabled`, { enabled }),
+  deleteWSSite: (id: number) => api.delete<{ ok: boolean }>(`/ws/sites/${id}`),
+  wsStatus: () => api.get<{ status: WSStatus }>('/ws/status'),
+  wsEnv: () => api.get<{ env: ProxyEnv }>('/ws/env'),
+  dnsConfig: () => api.get<{ config: DNSProviderConfig }>('/ws/dns-config'),
+  setDNSConfig: (c: DNSProviderConfig) => api.post<{ config: DNSProviderConfig }>('/ws/dns-config', c),
 
   audit: (limit = 200) => api.get<{ items: AuditEntry[] }>(`/audit?limit=${limit}`),
 
@@ -559,7 +636,7 @@ export const backend = {
 
   /* 自签证书 */
   selfSignCert: (hosts: string) =>
-    api.post<{ cert_pem: string; key_pem: string; expires: string }>('/proxy/selfsign', { hosts }),
+    api.post<{ cert_pem: string; key_pem: string; expires: string }>('/ws/selfsign', { hosts }),
   restore: (payload: unknown) =>
     api.post<{ sync: SyncResult; forwards: number; ip_lists: number }>('/system/restore', payload),
   users: () => api.get<{ items: User[] }>('/users'),

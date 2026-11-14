@@ -23,6 +23,7 @@ import (
 	"firepanel/internal/scheduler"
 	"firepanel/internal/store"
 	"firepanel/internal/sysinfo"
+	"firepanel/internal/webservice"
 )
 
 // App 面板运行时。
@@ -37,6 +38,7 @@ type App struct {
 	Net     *sysinfo.NetSampler
 	Traffic *monitor.Monitor
 	Proxy   *proxy.Manager
+	WS      *webservice.Manager
 	Sched   *scheduler.Scheduler
 	Notify  *notify.Notifier
 	Jail    *jail.Engine
@@ -95,22 +97,6 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) (*App, error) {
 		Net:     sysinfo.NewNetSampler(),
 		Traffic: monitor.New(exec, 2*time.Second),
 	}
-	mode := cfg.Proxy.Backend
-	if mode != proxy.ModeCaddy {
-		mode = proxy.ModeBuiltin
-	}
-	// 引擎与监听端口的设置页覆盖（settings 持久化，优先于配置文件）
-	if v, err := st.GetSetting("proxy_engine"); err == nil && (v == proxy.ModeBuiltin || v == proxy.ModeCaddy) {
-		mode = v
-	}
-	httpAddr := cfg.Server.ProxyHTTP
-	if v, err := st.GetSetting("proxy_http_addr"); err == nil && v != "" {
-		httpAddr = v
-	}
-	httpsAddr := cfg.Server.ProxyHTTPS
-	if v, err := st.GetSetting("proxy_https_addr"); err == nil && v != "" {
-		httpsAddr = v
-	}
 	// 面板自身端口（HTTP listen / HTTPS panel_https_port）的设置页覆盖
 	if v, err := st.GetSetting("panel_listen"); err == nil && v != "" {
 		cfg.Server.Listen = v
@@ -118,29 +104,24 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) (*App, error) {
 	if v, err := st.GetSetting("panel_https_port"); err == nil && v != "" {
 		cfg.Server.PanelHTTPSPort = v
 	}
+	// 证书层：certmagic 自动证书（Web 服务与面板自身共用证书存储）
 	a.Proxy = proxy.NewManager(log, proxy.Options{
-		Mode:       mode,
-		HTTPAddr:   httpAddr,
-		HTTPSAddr:  httpsAddr,
-		CertDir:    filepath.Join(cfg.Server.DataDir, "certs"),
-		CaddyAdmin: cfg.Proxy.CaddyAdmin,
+		CertDir: filepath.Join(cfg.Server.DataDir, "certs"),
 	})
 	a.Proxy.OnEvent = func(eventType, message, detail string) {
 		a.broadcast("events", fw.Event{Type: eventType, Message: message, Detail: detail, Timestamp: time.Now()})
 	}
-	a.Proxy.SetRunner(exec)
-	var caddyGlobal proxy.CaddyGlobalSettings
-	if v, err := st.GetSetting("caddy_global"); err == nil && v != "" {
-		_ = json.Unmarshal([]byte(v), &caddyGlobal)
-	}
-	a.Proxy.SetCaddyGlobal(caddyGlobal)
-	if v, err := st.GetSetting("caddy_custom"); err == nil {
-		a.Proxy.SetCaddyCustom(v)
-	}
-	a.Proxy.OnCertStatus = func(domainID int64, status, errMsg string) {
+	// Web 服务引擎：多监听器 + 域名路由站点，热重载
+	a.WS = webservice.New(log, webservice.Options{
+		OnEvent: func(eventType, message, detail string) {
+			a.broadcast("events", fw.Event{Type: eventType, Message: message, Detail: detail, Timestamp: time.Now()})
+		},
+		Certs: a.Proxy,
+	})
+	a.WS.SetCertStatusCallback(func(siteID int64, status, errMsg string) {
 		var expires *time.Time
-		_ = a.Store.SetRPDomainCert(domainID, status, errMsg, expires)
-	}
+		_ = a.Store.SetWSSiteCert(siteID, status, errMsg, expires)
+	})
 	a.Notify = notify.New()
 	a.SetBasicAuth(LoadBasicAuth(st, cfg))
 	a.Jail = jail.New(st, log, fw.NewRealExecutor())
@@ -276,130 +257,153 @@ func (a *App) loadProxyDNS() {
 	}
 }
 
-// CertExpiryScan 巡检反代证书到期日：刷新 cert_expires_at；
+// CertExpiryScan 巡检站点证书到期日：刷新 cert_expires_at；
 // 已过期或 3 天内到期（含续期失败场景）时发事件进告警通道。
 func (a *App) CertExpiryScan() {
-	domains, err := a.Store.ListRPDomains()
+	sites, err := a.Store.ListWSSites()
 	if err != nil {
 		return
 	}
 	now := time.Now()
-	for _, d := range domains {
-		if d.TLSMode != "auto" || !d.Enabled {
+	for i := range sites {
+		s := &sites[i]
+		if s.TLSMode == "none" || !s.Enabled {
 			continue
 		}
-		// 已标记 error 的域名不覆盖：签发失败时旧证书可能仍在服务，
+		// 已标记 error 的站点不覆盖：签发失败时旧证书可能仍在服务，
 		// 巡检把它刷成 ok 会掩盖诊断信息（到期告警依旧覆盖此场景）
-		if d.CertStatus == "error" {
+		if s.CertStatus == "error" {
 			continue
 		}
-		exp, ok := a.Proxy.CertExpiry(d.Domain)
+		exp, ok := a.WS.CertExpiry(&webservice.Site{
+			ID: s.ID, Domains: s.Domains, TLSMode: s.TLSMode, CertPEM: s.CertPEM,
+		})
 		if !ok {
 			continue
 		}
-		_ = a.Store.SetRPDomainCert(d.ID, "ok", "", &exp)
+		_ = a.Store.SetWSSiteCert(s.ID, "ok", "", &exp)
 		switch {
 		case exp.Before(now):
 			a.broadcast("events", fw.Event{
 				Type: "proxy_cert_error", Timestamp: now,
-				Message: fmt.Sprintf("反代证书已过期: %s（到期 %s）", d.Domain, exp.Format("2006-01-02 15:04")),
-				Detail:  "自动续期未成功，请检查该域名的挑战方式与环境（80/443 可达性、DNS 凭据）",
+				Message: fmt.Sprintf("站点证书已过期: %s（到期 %s）", firstOf(s.Domains), exp.Format("2006-01-02 15:04")),
+				Detail:  "自动续期未成功，请检查该站点的挑战方式与环境（80/443 可达性、DNS 凭据）",
 			})
 		case exp.Before(now.Add(72 * time.Hour)):
 			a.broadcast("events", fw.Event{
 				Type: "proxy_cert_error", Timestamp: now,
-				Message: fmt.Sprintf("反代证书即将到期: %s（剩 %d 小时）", d.Domain, int(exp.Sub(now).Hours())),
+				Message: fmt.Sprintf("站点证书即将到期: %s（剩 %d 小时）", firstOf(s.Domains), int(exp.Sub(now).Hours())),
 				Detail:  "IP 短期证书（约 6.7 天）属正常短周期，续期由 certmagic 自动进行",
 			})
 		}
 	}
 }
 
-// SaveCaddyGlobal 持久化 Caddyfile 全局选项并热更新管理器。
-func (a *App) SaveCaddyGlobal(g proxy.CaddyGlobalSettings) error {
-	b, _ := json.Marshal(g)
-	if err := a.Store.SetSetting("caddy_global", string(b)); err != nil {
-		return err
+func firstOf(list []string) string {
+	if len(list) > 0 {
+		return list[0]
 	}
-	a.Proxy.SetCaddyGlobal(g)
-	return nil
+	return ""
 }
 
-// ReloadProxy 从 store 装载反代配置并热重载；返回每个域名的证书状态已更新的行。
-func (a *App) ReloadProxy() error {
+// ReloadSites 从 store 装载监听与站点配置并热重载 Web 服务。
+func (a *App) ReloadSites() error {
 	a.loadProxyDNS()
+	listeners, err := a.Store.ListWSListeners()
+	if err != nil {
+		return err
+	}
+	sites, err := a.Store.ListWSSites()
+	if err != nil {
+		return err
+	}
+	sitesByListener := map[int64][]webservice.Site{}
+	for i := range sites {
+		s := &sites[i]
+		ws := webservice.Site{
+			ID: s.ID, Name: s.Name, Domains: s.Domains, Type: s.Type, Enabled: s.Enabled,
+			Default: s.Default, TLSMode: s.TLSMode, Challenge: s.Challenge,
+			CertPEM: s.CertPEM, KeyPEM: s.KeyPEM, Remark: s.Remark,
+		}
+		// 引擎配置（targets/locations/health/...）存于 config 列
+		if err := webservice.UnmarshalConfig(s.Config, &ws); err != nil {
+			a.Log.Warn("站点配置解析失败", "site", s.Name, "err", err)
+		}
+		// 手动证书在 Reload 中解析；成功与否由事件体现
+		if s.TLSMode == "manual" && s.Enabled {
+			_ = a.Store.SetWSSiteCert(s.ID, "ok", "", nil)
+		}
+		sitesByListener[s.ListenerID] = append(sitesByListener[s.ListenerID], ws)
+	}
+	cfgs := make([]webservice.ListenerConfig, 0, len(listeners))
+	for i := range listeners {
+		l := &listeners[i]
+		cfg := webservice.ListenerConfig{
+			ID: l.ID, Name: l.Name, Enable: l.Enabled,
+			ListenIP: l.Config.ListenIP, Port: l.Config.Port, TLS: l.Config.TLS,
+			MinTLS: l.Config.MinTLS, PlainHTTP: l.Config.PlainHTTP,
+			HTTPPort: l.Config.HTTPPort, HTTPPortMode: l.Config.HTTPPortMode,
+			Remark: l.Remark, Sites: sitesByListener[l.ID],
+		}
+		if cfg.Sites == nil {
+			cfg.Sites = []webservice.Site{}
+		}
+		cfgs = append(cfgs, cfg)
+	}
+	// 无监听的孤儿站点挂进第一个监听（迁移中间态兜底）
+	if orphans := sitesByListener[0]; len(orphans) > 0 && len(cfgs) > 0 {
+		cfgs[0].Sites = append(cfgs[0].Sites, orphans...)
+	}
+	return a.WS.Reload(context.Background(), cfgs)
+}
+
+// ReloadProxy 兼容旧名（启动路径调用）：装载站点配置并热重载。
+func (a *App) ReloadProxy() error { return a.ReloadSites() }
+
+// MigrateRPToSites 启动时把旧反代域名/路由表迁移为站点（幂等）。
+func (a *App) MigrateRPToSites() {
+	// 确保有默认监听（旧设置里的反代端口 → HTTPS 主端口 + 额外 HTTP 端口）
+	if err := a.Store.EnsureDefaultWSListener(a.Cfg.Server.ProxyHTTP, a.Cfg.Server.ProxyHTTPS); err != nil {
+		a.Log.Warn("创建默认监听失败", "err", err)
+	} else {
+		var lid int64
+		if ls, err := a.Store.ListWSListeners(); err == nil && len(ls) > 0 {
+			lid = ls[0].ID
+		}
+		if lid > 0 {
+			if err := a.Store.AssignSitesToListener(lid); err != nil {
+				a.Log.Warn("站点挂载默认监听失败", "err", err)
+			}
+		}
+	}
 	domains, err := a.Store.ListRPDomains()
 	if err != nil {
-		return err
+		// 旧表不存在（全新安装）或已清理：跳过
+		return
 	}
-	routes, err := a.Store.ListRPRoutes(0)
-	if err != nil {
-		return err
+	routes, _ := a.Store.ListRPRoutes(0)
+	if len(domains) == 0 {
+		return
 	}
-	routesByDomain := map[int64][]proxy.RouteConfig{}
+	routesByDomain := map[int64][]store.RPRoute{}
 	for _, r := range routes {
-		routesByDomain[r.DomainID] = append(routesByDomain[r.DomainID], proxy.RouteConfig{
-			ID: r.ID, PathMatch: r.PathMatch, UpstreamURL: r.UpstreamURL,
-			WsEnabled: r.WsEnabled, HealthPath: r.HealthPath, Enabled: r.Enabled,
-		})
+		routesByDomain[r.DomainID] = append(routesByDomain[r.DomainID], r)
 	}
-	var cfgs []proxy.DomainConfig
+	var n int
+	if err := a.Store.DB().QueryRow(`SELECT COUNT(*) FROM ws_sites`).Scan(&n); err != nil || n > 0 {
+		return
+	}
 	for _, d := range domains {
-		cfgs = append(cfgs, proxy.DomainConfig{
-			ID: d.ID, Domain: d.Domain, Enabled: d.Enabled, TLSMode: d.TLSMode,
-			Challenge: d.Challenge, CaddyOpts: d.CaddyOpts,
-			CertPEM: d.CertPEM, KeyPEM: d.KeyPEM, CertStatus: d.CertStatus,
-			Routes: routesByDomain[d.ID],
-		})
-		// 手动证书在 Reload 中解析；成功与否由事件体现
-		if d.TLSMode == "manual" && d.Enabled {
-			_ = a.Store.SetRPDomainCert(d.ID, "ok", "", nil)
+		s := store.ConvertRPDomain(d, routesByDomain[d.ID])
+		if err := a.Store.CreateWSSite(s); err != nil {
+			a.Log.Error("迁移反代域名失败", "domain", d.Domain, "err", err)
+		} else {
+			a.Log.Info("反代域名已迁移为站点", "domain", d.Domain)
 		}
 	}
-	if err := a.Proxy.Reload(context.Background(), cfgs); err != nil {
-		// 监听失败等致命错误：把所有 auto 域名标记错误
-		for _, d := range domains {
-			if d.TLSMode == "auto" {
-				_ = a.Store.SetRPDomainCert(d.ID, "error", err.Error(), nil)
-			}
-		}
-		return err
-	}
-	return nil
-}
-
-// ProxyHealthLoop 周期探测上游健康并回写数据库 + 广播。
-func (a *App) ProxyHealthLoop(ctx context.Context) {
-	go func() {
-		t := time.NewTicker(15 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if !a.Proxy.Running() {
-					continue
-				}
-				for _, tgt := range a.Proxy.HealthTargets() {
-					res := tgt.Probe(5 * time.Second)
-					prev := ""
-					if r, err := a.Store.GetRPRoute(tgt.RouteID); err == nil {
-						prev = r.HealthStatus
-					}
-					_ = a.Store.SetRPRouteHealth(tgt.RouteID, res.Status, time.Now())
-					if prev != res.Status {
-						a.broadcast("events", fw.Event{
-							Type:      "health_" + res.Status,
-							Message:   fmt.Sprintf("上游 %s（%s）状态变更: %s", tgt.Upstream, tgt.Domain, res.Status),
-							Detail:    res.Detail,
-							Timestamp: time.Now(),
-						})
-					}
-				}
-			}
-		}
-	}()
+	// 迁移完成后清空旧表（保留表结构以便旧备份恢复逻辑复用）
+	_, _ = a.Store.DB().Exec(`DELETE FROM rp_routes`)
+	_, _ = a.Store.DB().Exec(`DELETE FROM rp_domains`)
 }
 
 // BroadcastEvent 通过 events/logs topic 广播内核相关事件，并分发告警。

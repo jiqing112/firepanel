@@ -58,8 +58,8 @@ POST /system/danger/cancel    {"token": "..."}               # 撤销：未生�
 | POST | /system/drift/check | 立即执行漂移检测 |
 | POST | /system/sync | 用面板期望状态覆盖内核（可能触发 danger） |
 | GET  | /dashboard/summary | 仪表盘：连接数/速率/今日流量/命中排行/采样 |
-| GET  | /system/backup?format=json\|iptables-save\|nft | 导出备份（下载）。JSON 含转发/名单/限速/NAT/定时任务/告警/防爆破/台账/反代域名与路由；不含用户与设置（含 JWT 密钥、DNS-01 凭据） |
-| POST | /system/restore | 从 JSON 备份恢复（全量替换上述结构化配置，可能触发 danger）。先全量校验再单事务写入；成功后热重载反代/定时任务/告警/防爆破 |
+| GET  | /system/backup?format=json\|iptables-save\|nft | 导出备份（下载）。JSON 含转发/名单/限速/NAT/定时任务/告警/防爆破/台账/Web 服务站点；不含用户与设置（含 JWT 密钥、DNS-01 凭据） |
+| POST | /system/restore | 从 JSON 备份恢复（全量替换上述结构化配置，可能触发 danger）。先全量校验再单事务写入；旧版反代备份自动转换为站点；成功后热重载站点/定时任务/告警/防爆破 |
 | GET  | /audit?limit=200 | 操作审计（新→旧） |
 | GET  | /settings/basicauth | 整站 Basic Auth 状态（密码不回传；`source`: file/config） |
 | POST | /settings/basicauth | `{enabled, username, password?}`（password 留空保持原密码；立即生效）。凭据持久化在**数据目录 basicauth.yaml**（0600；旧版程序目录文件仍兼容读取），手动编辑后约 2 秒热生效 |
@@ -115,29 +115,43 @@ POST /system/danger/cancel    {"token": "..."}               # 撤销：未生�
 | PUT  | /port-records/:id | 更新记录 |
 | DELETE | /port-records/:id | 删除记录 |
 
-## 反向代理 /proxy
+## Web 服务 /ws
+
+站点模型（gately 式）：站点 = 域名列表 + 类型 + 引擎配置。类型：`proxy`（反向代理）/ `redirect`（重定向）/ `static`（静态文件）/ `text`（固定文本）/ `close`（断开连接，444）。引擎配置（targets / locations / health / rate_limit / timeouts / headers 等）与后端 `webservice.Site` 结构一致，字段见下。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET  | /proxy/domains | 域名+路由+健康状态，`running` 为监听状态；`challenge` 为 ACME 挑战方式（空=自动） |
-| POST | /proxy/domains | `{domain, tls_mode: auto|manual|none, challenge?: auto|http|alpn|dns, cert_pem?, key_pem?, remark?}` |
-| PUT  | /proxy/domains/:id | 更新（含挑战方式；cert_pem/key_pem 留空保持原证书） |
-| DELETE | /proxy/domains/:id | 删除（级联路由） |
-| POST | /proxy/domains/:id/routes | `{path_match, upstream_url, ws_enabled?, health_path?}` |
-| PUT  | /proxy/routes/:id | 更新路由 |
-| DELETE | /proxy/routes/:id | 删除路由 |
-| GET  | /proxy/env | 环境探测：80/443 可用性与占用进程、当前引擎与监听、推荐监听端口与挑战方式、Caddy 安装检测 |
-| POST | /proxy/engine | 切换引擎与监听端口 `{engine: builtin\|caddy, http_addr?: ":端口", https_addr?: ":端口"}`，立即重建监听并持久化（重启保持）；切 caddy 需本机已安装 Caddy，切换时自动启停 Caddy 服务 |
-| POST | /proxy/caddy/install | 一键安装 Caddy（按发行版选包管理器，Debian/Ubuntu 回退官方仓库；同步执行可达数分钟；装完自动停用其自启服务，由引擎切换拉起） |
-| GET  | /proxy/caddyfile | 读取服务器上**实际的** Caddyfile：`{path, exists, current, generated, managed, legacy, merge_mode, hash, read_error}`；`current` 为磁盘真实内容，`generated` 为面板将生成的托管段预览 |
-| POST | /proxy/caddyfile | 手改保存 `{content, base_hash?}`：先 validate → 自动备份 `.bak-时间戳` → 写入 → reload；`base_hash` 与服务器当前文件不一致时返回 409（防覆盖他人改动）；校验失败不落盘 |
-| GET  | /proxy/caddy-global | Caddyfile 全局选项（email/debug） |
-| POST | /proxy/caddy-global | `{email, debug}`，保存后自动重载 Caddy |
-| GET  | /proxy/dns-config | DNS-01 凭据（token 脱敏） |
-| POST | /proxy/dns-config | `{provider: cloudflare\|alidns\|dnspod, api_token, secret_key?}`，保存后热生效 |
+| GET  | /ws/sites | 全部站点（含 listener_id） |
+| POST | /ws/sites | 创建站点：`{listener_id, domains: [], type, targets?, locations?, ...}` |
+| GET  | /ws/listeners | 监听列表（含站点计数） |
+| POST | /ws/listeners | 创建监听 `{name?, listen_ip?, port, tls, min_tls?, plain_http?, http_port?, http_port_mode?, remark?, enabled?}` |
+| PUT  | /ws/listeners/:id | 更新监听 |
+| PATCH | /ws/listeners/:id/enabled | `{enabled}` 启停 |
+| DELETE | /ws/listeners/:id | 删除（有站点时拒绝） |
+| GET  | /ws/topology | 拓扑快照：`?focus=<节点id>&ip=<访客IP>`，返回监听/站点/后端的速率、累计、健康与活动 IP；`focus` 指定节点时附 60 秒曲线 |
+| PUT  | /ws/sites/:id | 全量更新（cert_pem/key_pem 留空保持原证书） |
+| PATCH | /ws/sites/:id/enabled | `{enabled}` 启停开关 |
+| DELETE | /ws/sites/:id | 删除 |
+| GET  | /ws/status | 引擎状态快照：每站点 requests/active/errors/blocked/qps/rate60 + 每后端 healthy/conns/requests/bytes |
+| GET  | /ws/env | 环境探测：80/443 可用性与占用进程、当前监听、推荐端口与挑战方式 |
+| POST | /ws/listen | 监听调整 `{http_addr?: ":端口", https_addr?: ":端口", http_mode?: serve\|redirect}`，持久化并在重载后生效 |
+| GET  | /ws/dns-config | DNS-01 凭据（token 脱敏） |
+| POST | /ws/dns-config | `{provider: cloudflare\|alidns\|dnspod, api_token, secret_key?}`，保存后热生效 |
+| POST | /ws/selfsign | 为 IP/域名生成自签证书（ECDSA P-256，10 年） |
 
-变更后自动热重载；`tls_mode=manual` 需同时提供 PEM 证书与私钥。挑战方式说明：HTTP-01 需 80 可达（被占用时由持有者代答——本面板自身监听或寄生前置转发均可）；TLS-ALPN-01 需 443 由面板监听或 DNAT；DNS-01 无端口要求且泛域名必选，需先配置凭据；纯 IP 证书仅支持 HTTP-01/TLS-ALPN（shortlived profile）。证书到期由后台每 6 小时巡检，过期/3 天内到期发 `proxy_cert_error` 事件。
+反向代理站点的关键字段：
 
+- `targets`：后端列表，每项 `http(s)://host[:port] [weight=N] [backup]`；多项时 `lb_policy` 可选 `random` / `ip_hash` / `least_conn`（空=加权轮询）
+- `health`：`{enable, mode: http|tcp, path, interval, timeout, fails, passes}`；未启用时仍有被动检查（连续 3 次建连失败摘除 30 秒）
+- `locations`：分路径分流 `[{prefix, targets, strip_prefix}]`，最长前缀优先
+- `forwarded_headers`：向后端写入 X-Real-IP / X-Forwarded-*（访客自带的同名头一律剥除）
+- `timeouts`：`{connect, tls_handshake, response_header}`（秒，0=默认）
+- `rate_limit`：`{enable, rate, burst, max_conns}` 按 IP 限流
+- `ip_mode` / `ip_list`：站点级白名单/黑名单（IP 或 CIDR）
+- `request_headers` / `response_headers`：`"Key: Value"` 行，值为空表示删除该头
+- 建连失败自动换下一个后端重试；配置变更热重载，不断开已有连接，统计跨重载沿用
+
+证书说明：HTTP-01 需 80 可达（被占用时由持有者代答——本面板自身监听或寄生前置转发均可）；TLS-ALPN-01 需 443 由面板监听或 DNAT；DNS-01 无端口要求且泛域名必选；纯 IP 证书仅支持 HTTP-01/TLS-ALPN（shortlived profile，约 6.7 天自动续期）。证书到期由后台每 6 小时巡检，过期/3 天内到期发 `proxy_cert_error` 事件。
 ## 限速 /rate-limits
 
 ```json
@@ -222,7 +236,7 @@ config 形态：
 ```
 
 可订阅事件：`apply_fail`（应用失败）、`drift`（内核漂移）、`danger_pending`（高危待确认）、
-`health_down`（反代上游不可达）、`rollback`（自动回滚）、`proxy_cert_error`（证书失败）。
+`health_down`（上游不可达）、`rollback`（自动回滚）、`proxy_cert_error`（证书失败）。
 
 ## WebSocket /api/ws
 

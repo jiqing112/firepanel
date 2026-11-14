@@ -13,6 +13,7 @@
   import IPLists from '$lib/pages/IPLists.svelte';
   import FirewallRules from '$lib/pages/FirewallRules.svelte';
   import Proxy from '$lib/pages/Proxy.svelte';
+  import ProxyTopology from '$lib/pages/ProxyTopology.svelte';
   import Logs from '$lib/pages/Logs.svelte';
   import Backup from '$lib/pages/Backup.svelte';
   import RateLimit from '$lib/pages/RateLimit.svelte';
@@ -85,6 +86,8 @@
         return { comp: FirewallRules, titleKey: 'nav.firewall' };
       case '/proxy':
         return { comp: Proxy, titleKey: 'nav.proxy' };
+      case '/proxy/topology':
+        return { comp: ProxyTopology, titleKey: 'nav.topology' };
       case '/logs':
         return { comp: Logs, titleKey: 'nav.logs' };
       case '/nat':

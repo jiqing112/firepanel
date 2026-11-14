@@ -13,11 +13,6 @@ import (
 )
 
 // Config 是面板运行配置；文件 + CLI 双通道，CLI 优先。
-type ProxyConfig struct {
-	// 反向代理实现：builtin（面板内置引擎，可监听 80/443 或任意端口）| caddy（托管给本机 Caddy，经 Admin API 下发配置）
-	Backend    string `yaml:"backend"`
-	CaddyAdmin string `yaml:"caddy_admin"` // Caddy Admin API 地址，默认 http://127.0.0.1:2019
-}
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
@@ -25,7 +20,6 @@ type Config struct {
 	Firewall FirewallConfig `yaml:"firewall"`
 	Sync     SyncConfig     `yaml:"sync"`
 	Logging  LoggingConfig  `yaml:"logging"`
-	Proxy    ProxyConfig    `yaml:"proxy"`
 
 	// PrintVersion 仅来自命令行 -version，不参与配置文件。
 	PrintVersion bool `yaml:"-"`
@@ -36,8 +30,8 @@ type Config struct {
 type ServerConfig struct {
 	Listen     string `yaml:"listen"`      // 如 ":18088"
 	DataDir    string `yaml:"data_dir"`    // SQLite 与运行数据目录
-	ProxyHTTP  string `yaml:"proxy_http"`  // 反代 HTTP 监听，默认 ":80"
-	ProxyHTTPS string `yaml:"proxy_https"` // 反代 HTTPS 监听，默认 ":443"
+	ProxyHTTP  string `yaml:"proxy_http"`  // Web 服务 HTTP 监听，默认 ":80"
+	ProxyHTTPS string `yaml:"proxy_https"` // Web 服务 HTTPS 监听，默认 ":443"
 	// 面板自身 HTTPS：填公网 IP 或域名（自动签发 LE 证书，IP 走 6.7 天短期证书自动续期），
 	// 或配合 panel_tls_cert/panel_tls_key 使用自签/手动证书。空=关闭。
 	PanelHTTPS     string `yaml:"panel_https"`
@@ -109,10 +103,6 @@ func defaults() *Config {
 			HealInterval:  60 * time.Second,
 		},
 		Logging: LoggingConfig{Level: "info"},
-		Proxy: ProxyConfig{
-			Backend:    "builtin",
-			CaddyAdmin: "http://127.0.0.1:2019",
-		},
 	}
 }
 

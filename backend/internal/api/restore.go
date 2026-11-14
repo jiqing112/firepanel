@@ -13,10 +13,10 @@ import (
 	"firepanel/internal/fw"
 	"firepanel/internal/scheduler"
 	"firepanel/internal/store"
+	"firepanel/internal/webservice"
 )
 
-// validPathMatch 校验反代路径匹配：必须以 / 开头，且不能含控制字符或
-// Caddyfile 结构性字符——否则一个 path_match 就能闭合站点块、注入任意指令。
+// validPathMatch 校验路径匹配：必须以 / 开头，且不能含控制字符。
 func validPathMatch(p string) bool {
 	if p == "" || len(p) > 200 || !strings.HasPrefix(p, "/") {
 		return false
@@ -126,48 +126,67 @@ func validateBundle(b *store.Bundle) error {
 		}
 	}
 
-	domains := map[int64]bool{}
-	domainNames := map[string]bool{}
-	for i := range b.RPDomains {
-		d := &b.RPDomains[i]
-		if !validHost(d.Domain) {
-			return fmt.Errorf("反代域名 #%d: %q 不是合法域名", i+1, d.Domain)
+	// 站点：结构与引擎模型一致，用引擎的 Validate 校验；cert_pem/key_pem
+	// 需从备份字段合并回来（WSSite 的对应字段不参与列表 JSON）
+	for i := range b.WSSites {
+		sb := &b.WSSites[i]
+		site, err := siteFromBackup(sb)
+		if err != nil {
+			return fmt.Errorf("站点 #%d: %w", i+1, err)
 		}
-		if domainNames[strings.ToLower(d.Domain)] {
-			return fmt.Errorf("反代域名 #%d: 域名 %s 重复", i+1, d.Domain)
+		if err := site.Validate(); err != nil {
+			return fmt.Errorf("站点 #%d（%s）: %w", i+1, site.Name, err)
 		}
-		domainNames[strings.ToLower(d.Domain)] = true
-		switch d.TLSMode {
-		case "auto", "manual", "none":
-		default:
-			return fmt.Errorf("反代域名 #%d（%s）: tls_mode 不合法", i+1, d.Domain)
-		}
-		switch d.Challenge {
-		case "", "http", "alpn", "dns":
-		default:
-			return fmt.Errorf("反代域名 #%d（%s）: challenge 不合法", i+1, d.Domain)
-		}
-		if d.CaddyOpts != "" && !json.Valid([]byte(d.CaddyOpts)) {
-			return fmt.Errorf("反代域名 #%d（%s）: caddy_opts 不是合法 JSON", i+1, d.Domain)
-		}
-		domains[d.ID] = true
+		sb.Config = webservice.MarshalConfig(site)
+		sb.TLSMode = site.TLSMode
+		sb.Challenge = site.Challenge
 	}
-	for i := range b.RPRoutes {
-		r := &b.RPRoutes[i]
-		if r.DomainID <= 0 || !domains[r.DomainID] {
-			return fmt.Errorf("反代路由 #%d: 所属域名不存在（domain_id=%d）", i+1, r.DomainID)
+	// 旧版反代备份：转换为站点后用引擎 Validate 统一把关
+	// （路径前缀、上游地址等在恢复写入前全部校验，注入类内容拦在清空库之前）
+	if len(b.RPDomains) > 0 {
+		routesByDomain := map[int64][]store.RPRoute{}
+		for _, r := range b.RPRoutes {
+			routesByDomain[r.DomainID] = append(routesByDomain[r.DomainID], r)
 		}
-		if !validPathMatch(r.PathMatch) {
-			return fmt.Errorf("反代路由 #%d: 路径 %q 不合法", i+1, r.PathMatch)
-		}
-		if !validUpstream(strings.TrimSpace(r.UpstreamURL)) {
-			return fmt.Errorf("反代路由 #%d: 上游地址必须为 http(s)://host[:port]", i+1)
-		}
-		if hp := strings.TrimSpace(r.HealthPath); hp != "" && !strings.HasPrefix(hp, "/") {
-			return fmt.Errorf("反代路由 #%d: 健康检查路径必须以 / 开头", i+1)
+		for i := range b.RPDomains {
+			d := &b.RPDomains[i]
+			switch d.TLSMode {
+			case "auto", "manual", "none":
+			default:
+				return fmt.Errorf("反代域名 #%d（%s）: tls_mode 不合法", i+1, d.Domain)
+			}
+			switch d.Challenge {
+			case "", "http", "alpn", "dns":
+			default:
+				return fmt.Errorf("反代域名 #%d（%s）: challenge 不合法", i+1, d.Domain)
+			}
+			raw := store.ConvertRPDomain(d.RPDomain, routesByDomain[d.ID])
+			site := &webservice.Site{
+				ID: raw.ID, Name: raw.Name, Domains: raw.Domains, Type: raw.Type, Enabled: raw.Enabled,
+				TLSMode: raw.TLSMode, Challenge: raw.Challenge, CertPEM: d.CertPEM, KeyPEM: d.KeyPEM,
+			}
+			if err := webservice.UnmarshalConfig(raw.Config, site); err != nil {
+				return fmt.Errorf("反代域名 #%d（%s）: 配置不合法", i+1, d.Domain)
+			}
+			if err := site.Validate(); err != nil {
+				return fmt.Errorf("反代域名 #%d（%s）: %w", i+1, d.Domain, err)
+			}
 		}
 	}
 	return nil
+}
+
+// siteFromBackup 把备份站点行合并为引擎模型（含证书字段）。
+func siteFromBackup(sb *store.WSSiteBackup) (*webservice.Site, error) {
+	site := &webservice.Site{
+		ID: sb.ID, Name: sb.Name, Domains: sb.Domains, Type: sb.Type, Enabled: sb.Enabled,
+		Default: sb.Default, TLSMode: sb.TLSMode, Challenge: sb.Challenge,
+		CertPEM: sb.CertPEM, KeyPEM: sb.KeyPEM, Remark: sb.Remark,
+	}
+	if err := webservice.UnmarshalConfig(sb.Config, site); err != nil {
+		return nil, err
+	}
+	return site, nil
 }
 
 // Restore 从 JSON 备份恢复全量结构化配置。
