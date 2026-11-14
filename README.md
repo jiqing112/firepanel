@@ -2,6 +2,22 @@
 
 统一管理 **iptables / nftables** 的 Web 面板，单二进制部署（Go + 内嵌 Svelte 前端 + 纯 Go SQLite）。
 
+## 最近更新（v1.1.0）
+
+**Web 服务引擎重写 + 网络拓扑视图**（架构与交互 1:1 移植自 [gately](https://github.com/wangwanjie/gately)，纯 Go 单进程，不再依赖外置 Caddy）：
+
+- **监听器**：多监听端口，HTTPS 监听自动嗅探明文请求（跳转 HTTPS / 直接提供），可再开额外 HTTP 端口共用全部站点；证书按站点域名自动签发（Let's Encrypt HTTP-01 / TLS-ALPN-01 / DNS-01，IP 走短期证书自动续期）
+- **站点**：按域名路由（精确 / `*.泛域名` / IP / 默认站点兜底），五种类型——反向代理 / 重定向 / 静态文件 / 固定文本 / 断开连接（444）；反向代理支持多后端（weight / backup）、负载均衡（轮询 / 随机 / ip_hash / 最少连接）、主动 + 被动健康检查、分路径分流（去前缀）、失败自动换后端重试、头改写、限流、黑白名单、gzip；配置热重载不断开已有连接
+- **网络拓扑**：互联网 → 监听 → 站点 → 后端的实时流量图，**7 种布局**（树形 / 竖向树 / 径向 / 桑基图 / 旭日图 / 矩形树图 / 气泡图），连线流速按 QPS 动画；支持按访客 IP 筛选高亮整条链路、聚焦活动、按监听 / 异常 / 拦截原因筛选、地址打码；详情面板含速率指标、请求与字节曲线、活动 IP 列表
+- **运行方式**：侧栏「Web 服务」页添加监听（推荐 443 + 额外 HTTP 80）→ 添加站点（填域名与后端即可）→ 侧栏「网络拓扑」实时查看流量链路。旧反代数据在升级后自动迁移为站点
+
+| 网络拓扑 · 树形 | Web 服务 · 监听器与站点 |
+|---|---|
+| ![网络拓扑](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-topology-tree.png) | ![Web 服务](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-web.png) |
+| 网络拓扑 · 桑基布局（连线宽度按流量分配） | 另有径向 / 旭日图 / 矩形树图 / 气泡图等 7 种布局 |
+| ![桑基图](https://github.com/jiqing112/firepanel/releases/download/v1.1.0/shot-topology.png) | |
+
+> 升级说明：旧「反向代理」域名与路由会自动迁移为站点；Docker 用户 80/443/18088 需空闲。完整变更见 [Release Notes](https://github.com/jiqing112/firepanel/releases/tag/v1.1.0)。
 
 ## 核心特性
 
