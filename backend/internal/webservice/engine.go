@@ -242,9 +242,11 @@ func (m *Manager) Reload(ctx context.Context, listeners []ListenerConfig) error 
 		r.stop()
 	}
 	for _, r := range newRunners {
-		if r.err != "" || r.ln != nil {
+		if r.ln != nil {
 			continue
 		}
+		// 上次启动失败的监听每次 Reload 都重试（端口可能已被释放）
+		r.err = ""
 		if err := r.start(m.certs); err != nil {
 			r.err = err.Error()
 			m.log.warn("监听 :%d 启动失败: %v", r.cfg.Port, err)
@@ -285,6 +287,10 @@ func (m *Manager) Reload(ctx context.Context, listeners []ListenerConfig) error 
 
 	if firstErr != nil {
 		return firstErr
+	}
+	// 启动失败必须向上返回：调用方（启动/保存接口）要能感知监听没起来
+	if startErr != nil {
+		return startErr
 	}
 	return manageErr
 }
@@ -540,6 +546,7 @@ func (r *listenerRunner) start(certs CertProvider) error {
 			}()
 		}
 	}
+	r.err = ""
 	r.log.info("监听 :%d 已启动 tls=%v httpPort=%d mode=%s", r.cfg.Port, r.cfg.TLS, r.cfg.HTTPPort, r.cfg.HTTPPortMode)
 	return nil
 }
@@ -662,10 +669,12 @@ func (r *listenerRunner) acceptSniff(ln net.Listener, cfg *tls.Config, tlsCh, pl
 			_ = raw.Close()
 			continue
 		}
+		// 两条路径都要回放首字节：TLS 握手与明文请求都从第一字节开始
+		pc := &peekedConn{Conn: raw, b: first}
 		if first[0] == 0x16 {
-			tlsCh.ch <- tls.Server(raw, cfg)
+			tlsCh.ch <- tls.Server(pc, cfg)
 		} else {
-			plainCh.ch <- &peekedConn{Conn: raw, b: first}
+			plainCh.ch <- pc
 		}
 	}
 }
@@ -700,7 +709,7 @@ func (r *listenerRunner) serveTLS(w http.ResponseWriter, req *http.Request) {
 func (r *listenerRunner) servePlain(w http.ResponseWriter, req *http.Request) {
 	if r.cfg.TLS {
 		// TLS 端口收到的明文请求按 PlainHTTP 处理（ACME 挑战已在处理器外层应答）
-		if r.cfg.PlainHTTP == HTTPRedirect && isBrowserLike(req) {
+		if r.cfg.PlainHTTP == HTTPRedirect {
 			r.acts.redirect.hit(clientAddr(req).Addr(), time.Now().Unix())
 			http.Redirect(w, req, "https://"+hostOnly(req.Host)+req.URL.RequestURI(), http.StatusMovedPermanently)
 			return
@@ -747,13 +756,6 @@ func (r *listenerRunner) dispatch(w http.ResponseWriter, req *http.Request) {
 	h.ServeHTTP(w, req)
 }
 
-// isBrowserLike 浏览器打开的请求才整站跳转 HTTPS；扫描器与 API 客户端不跳，
-// 避免对外确认 HTTPS 监听的存在。
-func isBrowserLike(r *http.Request) bool {
-	ua := r.Header.Get("User-Agent")
-	return ua != "" && !strings.HasPrefix(ua, "curl/") && !strings.HasPrefix(ua, "Go-http-client")
-}
-
 /* ------------------------- 状态与查询 ------------------------- */
 
 // SiteStatus 是站点的状态快照。
@@ -771,6 +773,8 @@ type SiteStatus struct {
 	QPS      float64  `json:"qps"`
 	Rate60   []int64  `json:"rate60"`
 	Cert     string   `json:"cert,omitempty"`
+	// Upstreams 为代理站点的后端健康快照（UI 行内「N 后端不可用」用）
+	Upstreams []UpstreamStatus `json:"upstreams,omitempty"`
 }
 
 // StatusReport 是引擎的状态快照。
@@ -835,6 +839,7 @@ func (m *Manager) Status() StatusReport {
 			} else if h.site.TLSMode == "auto" {
 				ss.Cert = "auto"
 			}
+			ss.Upstreams = h.upstreamStatus()
 			rep.Sites = append(rep.Sites, ss)
 		}
 		for _, h := range r.current().all() {

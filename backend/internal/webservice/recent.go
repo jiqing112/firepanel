@@ -1,6 +1,7 @@
 package webservice
 
 import (
+	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -159,3 +160,8 @@ func netipAddr() netip.Addr {
 
 // nowUnix 返回当前 Unix 秒（测试用）。
 func nowUnix() int64 { return time.Now().Unix() }
+
+// netListen 供测试辅助：监听指定地址。
+func netListen(addr string) (net.Listener, error) {
+	return net.Listen("tcp", addr)
+}

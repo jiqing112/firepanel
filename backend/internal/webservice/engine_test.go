@@ -70,12 +70,16 @@ func freePort(t *testing.T) int {
 // engine 构建真实监听的引擎（端口由测试分配），返回管理器与主端口。
 func engine(t *testing.T, listeners ...ListenerConfig) (*Manager, []int) {
 	t.Helper()
-	ports := make([]int, len(listeners))
+	var ports []int
 	for i := range listeners {
-		ports[i] = freePort(t)
+		ports = append(ports, freePort(t))
 		listeners[i].Port = ports[i]
+		// 额外 HTTP 端口同样用临时端口，避免与宿主端口冲突；追加到返回值尾部
+		if listeners[i].HTTPPort > 0 {
+			listeners[i].HTTPPort = freePort(t)
+			ports = append(ports, listeners[i].HTTPPort)
+		}
 	}
-	_ = ports
 	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Certs: &fakeCerts{}})
 	if err := m.Reload(context.Background(), listeners); err != nil {
 		t.Fatalf("Reload: %v", err)
