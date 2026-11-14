@@ -42,11 +42,11 @@ type Manager struct {
 	OnEvent func(eventType, message, detail string)
 
 	// mu 保护运行态。读多写少（每个 TLS 握手都要查证书），用 RWMutex
-	mu      sync.RWMutex
-	cache   *certmagic.Cache
-	magic   map[string]*certmagic.Config // group -> config
-	nameGroup map[string]string          // 已管理证书名 -> group（续期路由用）
-	managed   map[string]string          // 已管理域名 -> group
+	mu        sync.RWMutex
+	cache     *certmagic.Cache
+	magic     map[string]*certmagic.Config // group -> config
+	nameGroup map[string]string            // 已管理证书名 -> group（续期路由用）
+	managed   map[string]string            // 已管理域名 -> group
 
 	dnsCfg DNSProviderConfig // DNS-01 凭据（可能运行中更新，需重建 dns 组）
 }

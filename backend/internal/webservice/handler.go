@@ -30,8 +30,8 @@ type logger struct {
 	onEvent eventFunc
 }
 
-func (l *logger) info(format string, args ...any)  { l.log.Info(fmt.Sprintf(format, args...)) }
-func (l *logger) warn(format string, args ...any)  { l.log.Warn(fmt.Sprintf(format, args...)) }
+func (l *logger) info(format string, args ...any)   { l.log.Info(fmt.Sprintf(format, args...)) }
+func (l *logger) warn(format string, args ...any)   { l.log.Warn(fmt.Sprintf(format, args...)) }
 func (l *logger) errorf(format string, args ...any) { l.log.Error(fmt.Sprintf(format, args...)) }
 
 func (l *logger) event(eventType, message, detail string) {
@@ -107,9 +107,9 @@ func (s *SiteStats) countStatus(code int) {
 
 // siteHandler 是一个站点编译后的处理器。
 type siteHandler struct {
-	site   *Site
-	ipList []netip.Prefix
-	stats  *SiteStats
+	site    *Site
+	ipList  []netip.Prefix
+	stats   *SiteStats
 	log     *logger
 	handler http.Handler
 	pool    *pool
@@ -189,7 +189,7 @@ func newSiteHandler(s *Site, log *logger) (*siteHandler, error) {
 
 // locationHandler 是编译后的分路径规则。
 type locationHandler struct {
-	prefix   string
+	prefix string
 	// pool 为该路径自己的后端，沿用站点后端时为 nil
 	pool    *pool
 	handler http.Handler
@@ -382,14 +382,14 @@ var sharedSessionCache = tls.NewLRUClientSessionCache(512)
 // newTransport 为一个后端创建连接池。每个后端独立一个 Transport，保证连接不被串用。
 func newTransport(s *Site) *http.Transport {
 	tr := &http.Transport{
-		Proxy:                 nil,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: s.InsecureSkipVerify, ClientSessionCache: sharedSessionCache},
-		ForceAttemptHTTP2:     true,
+		Proxy:             nil,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: s.InsecureSkipVerify, ClientSessionCache: sharedSessionCache},
+		ForceAttemptHTTP2: true,
 		// 本机后端的并发可能很高，空闲连接上限放宽到与 nginx keepalive 常用值相当，减少突发时的重复建连
-		MaxIdleConnsPerHost:   256,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost: 256,
+		IdleConnTimeout:     90 * time.Second,
 		// TLS 握手单独计时（拨号超时不含握手），避免卡在握手的后端无限占用连接
-		TLSHandshakeTimeout:   time.Duration(s.Timeouts.tlsHandshake()) * time.Second,
+		TLSHandshakeTimeout: time.Duration(s.Timeouts.tlsHandshake()) * time.Second,
 		// 0 表示不限；只限制请求发完到收到响应头之间的等待
 		ResponseHeaderTimeout: time.Duration(s.Timeouts.responseHeader()) * time.Second,
 	}
@@ -706,7 +706,7 @@ func (h *siteHandler) newProxy(s *Site, p *pool, strip string) http.Handler {
 		trs:    map[*upstream]*http.Transport{},
 		pool:   p,
 		target: retarget,
-		log: func(msg string) { h.log.warn("%s", msg) },
+		log:    func(msg string) { h.log.warn("%s", msg) },
 	}
 	for _, up := range p.ups {
 		tr := newTransport(s)

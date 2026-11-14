@@ -95,12 +95,12 @@ type TopoListener struct {
 	Running bool   `json:"running"`
 	Error   string `json:"error,omitempty"`
 	// FirePanel 的监听为一个端口：TLS 决定 https/http，HTTPPort 为额外的明文端口
-	Network  string `json:"network"`
-	ListenIP string `json:"listenIp"`
-	Port     int    `json:"port"`
-	TLS      bool   `json:"tls"`
-	HTTP3    bool   `json:"http3"`
-	PlainHTTP string `json:"plainHttp"`
+	Network       string `json:"network"`
+	ListenIP      string `json:"listenIp"`
+	Port          int    `json:"port"`
+	TLS           bool   `json:"tls"`
+	HTTP3         bool   `json:"http3"`
+	PlainHTTP     string `json:"plainHttp"`
 	HTTPPort      int    `json:"httpPort,omitempty"`
 	HTTPPortMode  string `json:"httpPortMode,omitempty"`
 	ProxyProtocol bool   `json:"proxyProtocol"`
@@ -524,4 +524,3 @@ func addTopoSeries(out []TopoRatePoint, add []seriesPoint) []TopoRatePoint {
 	}
 	return out
 }
-

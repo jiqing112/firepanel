@@ -12,23 +12,23 @@ import (
 // WSSite 一个 Web 服务站点。引擎配置序列化在 Config（webservice.Site 的子集：
 // targets / locations / health / rate_limit / headers 等），证书与启停为独立列。
 type WSSite struct {
-	ID            int64             `json:"id"`
-	ListenerID    int64             `json:"listener_id"`
-	Name          string            `json:"name"`
-	Domains       []string          `json:"domains"`
-	Type          string            `json:"type"`
-	Enabled       bool              `json:"enabled"`
-	Default       bool              `json:"default"`
-	Config        json.RawMessage   `json:"config"`
-	TLSMode       string            `json:"tls_mode"`
-	Challenge     string            `json:"challenge"`
-	CertPEM       string            `json:"-"`
-	KeyPEM        string            `json:"-"`
-	CertStatus    string            `json:"cert_status"`
-	CertError     string            `json:"cert_error"`
-	CertExpiresAt *time.Time        `json:"cert_expires_at"`
-	Remark        string            `json:"remark"`
-	CreatedAt     time.Time         `json:"created_at"`
+	ID            int64           `json:"id"`
+	ListenerID    int64           `json:"listener_id"`
+	Name          string          `json:"name"`
+	Domains       []string        `json:"domains"`
+	Type          string          `json:"type"`
+	Enabled       bool            `json:"enabled"`
+	Default       bool            `json:"default"`
+	Config        json.RawMessage `json:"config"`
+	TLSMode       string          `json:"tls_mode"`
+	Challenge     string          `json:"challenge"`
+	CertPEM       string          `json:"-"`
+	KeyPEM        string          `json:"-"`
+	CertStatus    string          `json:"cert_status"`
+	CertError     string          `json:"cert_error"`
+	CertExpiresAt *time.Time      `json:"cert_expires_at"`
+	Remark        string          `json:"remark"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 const wsSiteCols = `id,listener_id,name,domains,type,enabled,is_default,config,tls_mode,challenge,cert_pem,key_pem,cert_status,cert_error,cert_expires_at,remark,created_at`
@@ -178,20 +178,20 @@ func (s *Store) DeleteWSSite(id int64) error {
 // wsEngineConfig 是 webservice.Site 中存进 config 列的部分（与引擎 JSON 字段一致）。
 // 放在 store 包是为了迁移旧数据与恢复旧备份时无需依赖引擎包。
 type wsEngineConfig struct {
-	Targets           []string `json:"targets"`
-	LBPolicy          string   `json:"lb_policy"`
-	Health            any      `json:"health"`
-	Locations         []any    `json:"locations"`
-	UseTargetHost     bool     `json:"use_target_host"`
-	ForwardedHeaders  bool     `json:"forwarded_headers"`
-	InsecureSkipVerify bool    `json:"insecure_skip_verify"`
-	Timeouts          any      `json:"timeouts"`
-	Compress          bool     `json:"compress"`
-	RateLimit         any      `json:"rate_limit"`
-	RequestHeaders    []string `json:"request_headers"`
-	ResponseHeaders   []string `json:"response_headers"`
-	IPMode            string   `json:"ip_mode"`
-	IPList            []string `json:"ip_list"`
+	Targets            []string `json:"targets"`
+	LBPolicy           string   `json:"lb_policy"`
+	Health             any      `json:"health"`
+	Locations          []any    `json:"locations"`
+	UseTargetHost      bool     `json:"use_target_host"`
+	ForwardedHeaders   bool     `json:"forwarded_headers"`
+	InsecureSkipVerify bool     `json:"insecure_skip_verify"`
+	Timeouts           any      `json:"timeouts"`
+	Compress           bool     `json:"compress"`
+	RateLimit          any      `json:"rate_limit"`
+	RequestHeaders     []string `json:"request_headers"`
+	ResponseHeaders    []string `json:"response_headers"`
+	IPMode             string   `json:"ip_mode"`
+	IPList             []string `json:"ip_list"`
 }
 
 // ConvertRPDomain 把旧反代域名 + 路由转换为一个 Web 服务站点：

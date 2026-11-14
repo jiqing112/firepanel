@@ -47,10 +47,12 @@ func (u *testUpstream) seen() []string {
 
 type fakeCerts struct{}
 
-func (f *fakeCerts) Manage(context.Context, string, string) error                  { return nil }
-func (f *fakeCerts) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errNoCert }
-func (f *fakeCerts) Expiry(string) (time.Time, bool)                               { return time.Time{}, false }
-func (f *fakeCerts) HTTPChallengeHandler(next http.Handler) http.Handler           { return next }
+func (f *fakeCerts) Manage(context.Context, string, string) error { return nil }
+func (f *fakeCerts) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return nil, errNoCert
+}
+func (f *fakeCerts) Expiry(string) (time.Time, bool)                     { return time.Time{}, false }
+func (f *fakeCerts) HTTPChallengeHandler(next http.Handler) http.Handler { return next }
 
 var errNoCert = fmt.Errorf("no cert")
 
@@ -276,7 +278,7 @@ func TestRateLimit(t *testing.T) {
 	m, ports := engine(t, ListenerConfig{
 		ID: 1, Enable: true, Port: 80, Sites: []Site{{
 			ID: 1, Domains: []string{"rl.example.com"}, Type: TypeProxy, Enabled: true, TLSMode: "none",
-			Targets: []string{up.srv.URL},
+			Targets:   []string{up.srv.URL},
 			RateLimit: RateLimit{Enable: true, Rate: 5, Burst: 1},
 		}},
 	})

@@ -410,10 +410,10 @@ func (t *siteTable) all() []*siteHandler {
 
 // listenerRunner 运行一个监听器。
 type listenerRunner struct {
-	cfg       ListenerConfig
-	key       string
-	log       *logger
-	onStatus  OnCertStatusFunc
+	cfg      ListenerConfig
+	key      string
+	log      *logger
+	onStatus OnCertStatusFunc
 
 	// table 为当前生效的站点表。修改站点时整体替换，监听端口与已建立的连接不受影响
 	table atomicTable
@@ -825,7 +825,7 @@ func (m *Manager) Status() StatusReport {
 				ID: h.site.ID, Listener: l.ID, Name: h.site.Name, Type: h.site.Type,
 				Domains: h.site.Domains, Default: h.deflt,
 				Requests: h.stats.Requests.Load(), Active: h.stats.Active.Load(),
-				Errors: h.stats.Errors.Load(),
+				Errors:  h.stats.Errors.Load(),
 				Blocked: h.stats.BlockedIP.Load() + h.stats.BlockedRate.Load(),
 				QPS:     h.rate.avg(now, 10),
 				Rate60:  h.rate.rate60(now, 60),

@@ -290,16 +290,16 @@ func (s *Server) WSEnv(c *gin.Context) {
 
 // wsListenerReq 监听新增/编辑请求。
 type wsListenerReq struct {
-	Name      string `json:"name"`
-	Enabled   *bool  `json:"enabled"`
-	ListenIP  string `json:"listen_ip"`
-	Port      int    `json:"port"`
-	TLS       bool   `json:"tls"`
-	MinTLS    string `json:"min_tls"`
-	PlainHTTP string `json:"plain_http"`
-	HTTPPort  int    `json:"http_port"`
+	Name         string `json:"name"`
+	Enabled      *bool  `json:"enabled"`
+	ListenIP     string `json:"listen_ip"`
+	Port         int    `json:"port"`
+	TLS          bool   `json:"tls"`
+	MinTLS       string `json:"min_tls"`
+	PlainHTTP    string `json:"plain_http"`
+	HTTPPort     int    `json:"http_port"`
 	HTTPPortMode string `json:"http_port_mode"`
-	Remark    string `json:"remark"`
+	Remark       string `json:"remark"`
 }
 
 // ListWSListeners 监听列表（含站点计数）。

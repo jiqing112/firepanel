@@ -6,28 +6,28 @@ import "encoding/json"
 // 列字段（ID/Name/Domains/Type/Enabled/Default/TLSMode/Challenge/Cert/Remark）
 // 在 ws_sites 表有独立列，不进 config。
 type siteConfig struct {
-	Targets            []string         `json:"targets"`
-	LBPolicy           string           `json:"lb_policy"`
-	Health             HealthCheck      `json:"health"`
-	Locations          []Location       `json:"locations"`
-	UseTargetHost      bool             `json:"use_target_host"`
-	ForwardedHeaders   bool             `json:"forwarded_headers"`
-	InsecureSkipVerify bool             `json:"insecure_skip_verify"`
-	Timeouts           BackendTimeouts  `json:"timeouts"`
-	RedirectTo         string           `json:"redirect_to"`
-	RedirectCode       int              `json:"redirect_code"`
-	KeepPath           bool             `json:"keep_path"`
-	Root               string           `json:"root"`
-	ListDir            bool             `json:"list_dir"`
-	Text               string           `json:"text"`
-	ContentType        string           `json:"content_type"`
-	StatusCode         int              `json:"status_code"`
-	IPMode             string           `json:"ip_mode"`
-	IPList             []string         `json:"ip_list"`
-	Compress           bool             `json:"compress"`
-	RateLimit          RateLimit        `json:"rate_limit"`
-	RequestHeaders     []string         `json:"request_headers"`
-	ResponseHeaders    []string         `json:"response_headers"`
+	Targets            []string        `json:"targets"`
+	LBPolicy           string          `json:"lb_policy"`
+	Health             HealthCheck     `json:"health"`
+	Locations          []Location      `json:"locations"`
+	UseTargetHost      bool            `json:"use_target_host"`
+	ForwardedHeaders   bool            `json:"forwarded_headers"`
+	InsecureSkipVerify bool            `json:"insecure_skip_verify"`
+	Timeouts           BackendTimeouts `json:"timeouts"`
+	RedirectTo         string          `json:"redirect_to"`
+	RedirectCode       int             `json:"redirect_code"`
+	KeepPath           bool            `json:"keep_path"`
+	Root               string          `json:"root"`
+	ListDir            bool            `json:"list_dir"`
+	Text               string          `json:"text"`
+	ContentType        string          `json:"content_type"`
+	StatusCode         int             `json:"status_code"`
+	IPMode             string          `json:"ip_mode"`
+	IPList             []string        `json:"ip_list"`
+	Compress           bool            `json:"compress"`
+	RateLimit          RateLimit       `json:"rate_limit"`
+	RequestHeaders     []string        `json:"request_headers"`
+	ResponseHeaders    []string        `json:"response_headers"`
 }
 
 // MarshalConfig 序列化站点的引擎配置部分（写库用）。

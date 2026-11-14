@@ -12,20 +12,20 @@ import (
 // 故意不含 users（密码哈希）与 settings（含 jwt_secret / DNS 凭据），
 // 避免备份文件成为凭据载体；这两类数据由部署方单独迁移。
 type Bundle struct {
-	Version     int              `json:"version"`
-	Exported    string           `json:"exported,omitempty"`
-	Backend     string           `json:"backend,omitempty"`
-	Forwards    []ForwardRule    `json:"forward_rules"`
-	IPLists     []IPListEntry    `json:"ip_lists"`
-	RateLimits  []RateLimitRule  `json:"rate_limits"`
-	NATRules    []NATRule        `json:"nat_rules"`
-	Tasks       []ScheduledTask  `json:"tasks"`
-	Alerts      []AlertConfig    `json:"alerts"`
-	Jails       []JailConfig     `json:"jails"`
-	PortRecords []PortRecord     `json:"port_records"`
-	PortAllows  []PortAllowRule  `json:"port_allow_rules"`
-	WSListeners []WSListener     `json:"ws_listeners"`
-	WSSites     []WSSiteBackup   `json:"ws_sites"`
+	Version     int             `json:"version"`
+	Exported    string          `json:"exported,omitempty"`
+	Backend     string          `json:"backend,omitempty"`
+	Forwards    []ForwardRule   `json:"forward_rules"`
+	IPLists     []IPListEntry   `json:"ip_lists"`
+	RateLimits  []RateLimitRule `json:"rate_limits"`
+	NATRules    []NATRule       `json:"nat_rules"`
+	Tasks       []ScheduledTask `json:"tasks"`
+	Alerts      []AlertConfig   `json:"alerts"`
+	Jails       []JailConfig    `json:"jails"`
+	PortRecords []PortRecord    `json:"port_records"`
+	PortAllows  []PortAllowRule `json:"port_allow_rules"`
+	WSListeners []WSListener    `json:"ws_listeners"`
+	WSSites     []WSSiteBackup  `json:"ws_sites"`
 	// RPDomains / RPRoutes 为旧版反代模型的备份字段：恢复时转换为站点写入，
 	// 新备份不再生成这两组数据
 	RPDomains []RPDomainBackup `json:"rp_domains,omitempty"`

@@ -33,7 +33,7 @@ func (r *recentIPs) touch(a netip.Addr, sec int64) {
 	if len(r.m) >= recentCap {
 		if _, ok := r.m[a]; !ok {
 			// 满员时挤掉一条最旧的，保证新地址仍能进入
-			var oldSec int64 = 1<<62
+			var oldSec int64 = 1 << 62
 			var oldKey netip.Addr
 			for k, v := range r.m {
 				if v < oldSec {
